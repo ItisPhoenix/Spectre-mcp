@@ -1,0 +1,7 @@
+README.md
+gemini-settings.json
+*.pyc
+__pycache__
+.git
+.gitignore
+*.log

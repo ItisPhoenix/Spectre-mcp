@@ -1,0 +1,74 @@
+version: "3.9"
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  SPECTRE MCP — Docker Compose                                 ║
+# ║  MCP endpoint → http://localhost:8001/mcp                     ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+services:
+  spectre:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: spectre-mcp:latest
+    container_name: spectre-mcp
+
+    ports:
+      - "8001:8001"
+
+    environment:
+      MCP_TRANSPORT: sse
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8001"
+      TOOL_TIMEOUT: "600"
+      SPECTRE_PYTHON: /opt/mcp-venv/bin/python3
+      SPECTRE_WORDLIST: /usr/share/wordlists/dirb/common.txt
+      # ── Optional API keys — uncomment and fill in ─────────────
+      # SHODAN_API_KEY: "your_key_here"
+      # VT_API_KEY: "your_key_here"
+      # ABUSEIPDB_KEY: "your_key_here"
+      # ETHERSCAN_KEY: "your_key_here"
+
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_PTRACE
+
+    security_opt:
+      - no-new-privileges:false
+
+    volumes:
+      - spectre-output:/tmp/spectre
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # ── DNS: These DNS settings apply to the RUNNING container.
+    # They do NOT affect the 'docker compose build' process.
+    # If you have DNS issues during the build (e.g., apt-get fails),
+    # you must configure your Docker daemon's DNS settings.
+    # See: https://docs.docker.com/desktop/settings/windows/#network
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+
+    restart: unless-stopped
+
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 512M
+
+    # ── Healthcheck: Verifies that the TCP port is open and listening.
+    healthcheck:
+      test: [ "CMD-SHELL", "python3 -c \"import socket; s=socket.socket(); s.connect(('127.0.0.1',8001)); s.close()\"" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  spectre-output:
+    driver: local
