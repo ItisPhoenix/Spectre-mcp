@@ -2,7 +2,7 @@
 
 <p align="center">
   <b>Surveillance, Penetration, Exploitation & Cyber Threat Reconnaissance Engine</b><br>
-  <i>The ultimate OSINT + Pentest MCP Server for Gemini CLI.</i>
+  <i>The ultimate OSINT + Pentest MCP Server for AI Agent.</i>
 </p>
 
 <p align="center">
@@ -15,8 +15,8 @@
 
 ---
 
-## ⚡ Powering Your Gemini CLI
-**SPECTRE** transforms your AI agent into a sophisticated security researcher. By running a containerized Kali Linux environment exposed via **Server-Sent Events (SSE)**, it grants Gemini CLI direct access to **139+ industrial-grade tools**.
+## ⚡ Powering Your Ai Agent
+**SPECTRE** transforms your AI agent into a sophisticated security researcher. By running a containerized Kali Linux environment exposed via **Server-Sent Events (SSE)**, it grants AI Agent direct access to **139+ industrial-grade tools**.
 
 ### 🌟 Key Capabilities
 *   **🔍 Advanced OSINT:** Deep-dive into identities, emails, social footprints, and domain infrastructure.
@@ -31,7 +31,7 @@
 # 1. Spin up the engine
 docker compose up -d --build
 
-# 2. Connect your AI
+# 2. Connect your AI (e.g. Gemini CLI)
 gemini mcp add --transport sse --trust spectre http://localhost:8001/sse
 ```
 
