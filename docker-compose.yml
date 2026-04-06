@@ -1,5 +1,3 @@
-version: "3.9"
-
 # ╔══════════════════════════════════════════════════════════════╗
 # ║  SPECTRE MCP — Docker Compose                                 ║
 # ║  MCP endpoint → http://localhost:8001/mcp                     ║
