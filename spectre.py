@@ -171,7 +171,7 @@ def san(value: str) -> str:
     # Strip null bytes and newlines first (newline injection bypass)
     cleaned = re.sub(r"[\x00\n\r\x1a]", "", str(value))
     # Strip classic shell metacharacters
-    cleaned = re.sub(r"[;&|`$<>\\]", "", cleaned)
+    cleaned = re.sub(r"""[;&|`$<>\\'"]""", "", cleaned)
     return cleaned.strip()
 
 
@@ -319,20 +319,28 @@ def email_verify(email: str) -> str:
     """Verify if an email address is valid and reachable via SMTP probing."""
     if err := require(email): return err
     e = san(email)
+    # Write email to a temp JSON file; script reads it — no injection possible
+    import json as _json
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as jf:
+        _json.dump({"email": e}, jf)
+        jpath = jf.name
     script = (
-        "import smtplib, dns.resolver\n"
-        f"domain = '{e}'.split('@')[1]\n"
+        "import smtplib, dns.resolver, json, sys\n"
+        f"data = json.load(open({repr(jpath)}))\n"
+        "email = data['email']\n"
+        "domain = email.split('@')[1]\n"
         "try:\n"
         "    mx = str(dns.resolver.resolve(domain, 'MX')[0].exchange)\n"
         "    smtp = smtplib.SMTP(timeout=10)\n"
         "    smtp.connect(mx)\n"
         "    smtp.helo('test.com')\n"
         "    smtp.mail('test@test.com')\n"
-        f"    code, msg = smtp.rcpt('{e}')\n"
+        "    code, msg = smtp.rcpt(email)\n"
         "    print('VALID' if code == 250 else f'INVALID: {code} {msg}')\n"
         "    smtp.quit()\n"
         "except Exception as ex:\n"
         "    print(f'ERROR: {ex}')\n"
+        f"import os; os.unlink({repr(jpath)})\n"
     )
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
         f.write(script)
@@ -1971,14 +1979,29 @@ def generate_reverse_shell(lhost: str, lport: str = "4444",
 
 @mcp.tool()
 def encode_payload(payload: str, encoding: str = "base64") -> str:
-    """Encode a payload string. encoding: base64 | url | hex"""
-    if err := require(payload): return err
-    if encoding == "base64":
-        return run_argv(["bash", "-c", f"printf '%s' '{san(payload)}' | base64"])
-    elif encoding == "url":
-        return run_argv(["bash", "-c", f"python3 -c \"import urllib.parse; print(urllib.parse.quote('{san(payload)}'))\""])
-    elif encoding == "hex":
-        return run_argv(["bash", "-c", f"printf '%s' '{san(payload)}' | xxd"])
+    """Encode a payload string. encoding: base64 | url | hex
+
+    Security: avoid shell interpolation entirely (no bash/printf quoting).
+    """
+    if err := require(payload):
+        return err
+
+    s = str(payload)
+    try:
+        if encoding == "base64":
+            import base64
+            return base64.b64encode(s.encode("utf-8")).decode("ascii")
+
+        elif encoding == "url":
+            import urllib.parse
+            return urllib.parse.quote(s)
+
+        elif encoding == "hex":
+            return s.encode("utf-8").hex()
+
+    except Exception as exc:
+        return f"[ERROR] Failed to encode payload: {exc}"
+
     return "[ERROR] encoding must be: base64, url, or hex"
 
 

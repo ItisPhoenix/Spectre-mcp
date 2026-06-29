@@ -35,3 +35,4 @@ echo "    Auth      : ${SPECTRE_API_KEY:+ENABLED}${SPECTRE_API_KEY:-DISABLED (op
 echo ""
 
 exec /opt/mcp-venv/bin/python3 /opt/spectre/spectre.py
+

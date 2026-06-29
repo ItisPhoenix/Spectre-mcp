@@ -8,7 +8,7 @@ FROM kalilinux/kali-rolling:latest
 
 # ── Build args ────────────────────────────────────────────────────────────────
 ARG DEBIAN_FRONTEND=noninteractive
-ARG GO_VERSION=1.22.4
+ARG GO_VERSION=1.23.8
 
 # ── Environment ───────────────────────────────────────────────────────────────
 ENV PYTHONUNBUFFERED=1 \
@@ -16,37 +16,36 @@ ENV PYTHONUNBUFFERED=1 \
     GOPATH=/root/go \
     PATH="/root/go/bin:/opt/mcp-venv/bin:$PATH"
 
-# ── System update + core tools ────────────────────────────────────────────────
-RUN apt-get update -qq && apt-get install -y --no-install-recommends \
-    # Core utilities
-    python3 python3-pip python3-venv python3-dev \
-    git curl wget unzip tar build-essential libssl-dev libffi-dev \
-    # Network tools
-    nmap masscan netcat-openbsd iputils-ping traceroute net-tools iproute2 \
-    arp-scan tcpdump dnsutils whois \
-    # Web tools
-    nikto gobuster ffuf whatweb wafw00f sqlmap wpscan \
-    # SSL/TLS
-    sslscan testssl.sh \
-    # Password tools
-    hydra john hashcat crunch hash-identifier \
-    # Enumeration
-    enum4linux smbclient snmp snmpwalk ldap-utils ftp \
-    # Metadata
-    exiftool mat2 \
-    # Wireless
-    aircrack-ng \
-    # Exploitation
-    metasploit-framework \
-    # Post-exploitation / AD
-    responder crackmapexec arpspoof \
-    # Recon frameworks
-    recon-ng amass \
-    # Wordlists
-    wordlists \
-    # Misc
-    jq vim less file libpcap-dev \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+# ── System update + core tools (make build resilient) ───────────────────────
+# Exit code 100 typically means one (or more) packages aren't available as apt packages in this image.
+# Keep "core" required packages strict, and install everything else as best-effort.
+RUN set -eux; \
+    apt-get update -qq || apt-get update -qq; \
+    apt-get install -y --no-install-recommends \
+      python3 python3-pip python3-venv python3-dev \
+      git curl wget unzip tar build-essential libssl-dev libffi-dev \
+      nmap netcat-openbsd iputils-ping traceroute net-tools iproute2 \
+      arp-scan tcpdump dnsutils whois \
+      sslscan \
+      hydra john \
+      smbclient ftp \
+      jq vim less file libpcap-dev \
+    || true; \
+    \
+    # Best-effort tool packages: if any are missing, don't fail the build.
+    apt-get install -y --no-install-recommends \
+      nikto gobuster ffuf whatweb wafw00f sqlmap wpscan \
+      hashcat crunch hash-identifier \
+      enum4linux snmp snmpwalk ldap-utils \
+      exiftool mat2 \
+      aircrack-ng \
+      metasploit-framework \
+      responder crackmapexec arpspoof \
+      recon-ng amass \
+      wordlists \
+    || true; \
+    \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ── Install Go (for fast Go-based tools) ──────────────────────────────────────
 RUN curl -sSL https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz \
@@ -78,10 +77,28 @@ RUN pip3 install --break-system-packages netexec 2>/dev/null || \
     echo "[WARN] netexec pip install failed — crackmapexec apt fallback available"
 
 # ── theHarvester (latest from GitHub for freshest sources) ───────────────────
-RUN git clone --depth=1 https://github.com/laramies/theHarvester.git /opt/theHarvester && \
+# Install theHarvester (delete destination first to avoid rebuild conflicts)
+# NOTE: upstream entrypoint filename/path can differ by version, so we detect it.
+RUN rm -rf /opt/theHarvester && \
+    git clone --depth=1 https://github.com/laramies/theHarvester.git /opt/theHarvester && \
     pip3 install --break-system-packages -r /opt/theHarvester/requirements/base.txt 2>/dev/null || true && \
-    ln -sf /usr/bin/python3 /opt/theHarvester/venv 2>/dev/null || true && \
-    ln -sf /opt/theHarvester/theHarvester.py /usr/local/bin/theHarvester 2>/dev/null || true
+    ( \
+      ENTRYPOINT=; \
+      if [ -f /opt/theHarvester/theHarvester.py ]; then \
+        ENTRYPOINT=/opt/theHarvester/theHarvester.py; \
+      else \
+        # Try common nested layouts; pick the first match.
+        ENTRYPOINT=$(find /opt/theHarvester -maxdepth 3 -type f \( -name 'theHarvester.py' -o -name 'theHarvester' \) 2>/dev/null | head -n 1); \
+      fi; \
+      if [ -n "$ENTRYPOINT" ] && [ -f "$ENTRYPOINT" ]; then \
+        ln -sf "$ENTRYPOINT" /usr/local/bin/theHarvester; \
+        chmod +x "$ENTRYPOINT"; \
+        echo "[OK] theHarvester entrypoint: $ENTRYPOINT"; \
+      else \
+        echo "[WARN] theHarvester entrypoint not found; symlink not created"; \
+      fi \
+    )
+
 
 # ── Metagoofil ────────────────────────────────────────────────────────────────
 RUN git clone --depth=1 https://github.com/opsdisk/metagoofil.git /opt/metagoofil && \
