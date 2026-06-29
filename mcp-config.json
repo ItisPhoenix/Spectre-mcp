@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "spectre": {
+      "type": "sse",
+      "url": "http://localhost:8001/sse"
+    }
+  }
+}
+
