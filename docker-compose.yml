@@ -40,7 +40,7 @@ services:
       - SYS_PTRACE
 
     security_opt:
-      - no-new-privileges:false
+      - no-new-privileges:true
 
     volumes:
       - spectre-output:/tmp/spectre

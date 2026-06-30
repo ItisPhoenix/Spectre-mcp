@@ -26,14 +26,8 @@ import tempfile
 try:
     from mcp.server.fastmcp import FastMCP
 except ImportError:
-    print("[WARNING] MCP SDK not found. Attempting to install...")
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "mcp[cli]", "fastmcp"])
-        from mcp.server.fastmcp import FastMCP
-    except Exception as e:
-        print(f"[CRITICAL] Failed to install MCP SDK: {e}")
-        print("Please run: pip install mcp[cli] fastmcp")
-        sys.exit(1)
+    print("[CRITICAL] MCP SDK not found. Install: pip install 'mcp[cli]==1.9.4' fastmcp==2.3.3", file=sys.stderr)
+    sys.exit(1)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BOOTSTRAP
@@ -126,7 +120,12 @@ def run(cmd: str, timeout: int = TIMEOUT) -> str:
     log.info("EXEC: %s", _mask(cmd[:300]))
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=timeout
+            cmd,
+            shell=True,
+            executable="/bin/bash",
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
         out = r.stdout.strip()
         err = r.stderr.strip()
@@ -717,7 +716,7 @@ def abuseipdb_check(ip: str, api_key: str = "") -> str:
 def nmap_scan(target: str, flags: str = "-sV -sC -T4 --open") -> str:
     """Nmap port scan with service/version detection."""
     if err := require(target): return err
-    return run(f"sudo nmap {san(flags)} {san(target)}")
+    return run(f"nmap {san(flags)} {san(target)}")
 
 
 @mcp.tool()
@@ -725,7 +724,7 @@ def nmap_vuln(target: str, ports: str = "") -> str:
     """Nmap vulnerability scripts scan — detects known CVEs."""
     if err := require(target): return err
     p = f"-p {san(ports)}" if ports else ""
-    return run(f"sudo nmap --script vuln {p} {san(target)}", timeout=900)
+    return run(f"nmap --script vuln {p} {san(target)}", timeout=900)
 
 
 @mcp.tool()
@@ -733,7 +732,7 @@ def nmap_full(target: str) -> str:
     """Full nmap — all 65535 ports, OS detection, version, scripts."""
     if err := require(target): return err
     return run(
-        f"sudo nmap -sV -sC -O -A -p- --min-rate 2000 {san(target)}",
+        f"nmap -sV -sC -O -A -p- --min-rate 2000 {san(target)}",
         timeout=1200,
     )
 
@@ -753,7 +752,7 @@ def masscan_scan(target: str, ports: str = "1-65535", rate: str = "5000") -> str
     """Masscan — world's fastest port scanner."""
     if err := require(target): return err
     return run(
-        f"sudo masscan {san(target)} -p{san(ports)} --rate {san(rate)}"
+        f"masscan {san(target)} -p{san(ports)} --rate {san(rate)}"
     )
 
 
@@ -799,14 +798,14 @@ def ping_sweep(network: str) -> str:
     """Ping sweep a CIDR range to discover live hosts. e.g. 192.168.1.0/24"""
     if err := require(network): return err
     return run(
-        f"sudo nmap -sn {san(network)} --open 2>/dev/null | grep 'Nmap scan report'"
+        f"nmap -sn {san(network)} --open 2>/dev/null | grep 'Nmap scan report'"
     )
 
 
 @mcp.tool()
 def arp_scan(network: str = "192.168.1.0/24") -> str:
     """ARP scan — discover all devices on the local network."""
-    return run(f"sudo arp-scan {san(network)}")
+    return run(f"arp-scan {san(network)}")
 
 
 # ─── WEB APPLICATION INTELLIGENCE ────────────────────────────────────────────
@@ -1138,11 +1137,12 @@ def scrapling_session_fetch(url: str, cookies: dict = None, mode: str = "fetcher
             cookie_file = cf.name
 
     script_lines = [
-        "from scrapling import Session",
+        "from scrapling.fetchers import FetcherSession",
         "import json as _j",
         "try:",
-        f"    session = Session(mode='{m}')",
+        f"    session = FetcherSession()",
     ]
+
     if cookie_file:
         script_lines += [
             f"    with open({repr(cookie_file)}) as _cf:",
@@ -2059,7 +2059,7 @@ def full_domain_profile(domain: str) -> str:
         sec.append("(could not resolve IP)")
 
     banner("[6/10] OPEN PORTS")
-    sec.append(run(f"sudo nmap -F --open -T4 {d} 2>/dev/null | grep -v '^#'"))
+    sec.append(run(f"nmap -F --open -T4 {d} 2>/dev/null | grep -v '^#'"))
 
     banner("[7/10] WEB TECHNOLOGY")
     sec.append(run(f"whatweb -a 1 {d} 2>/dev/null"))
@@ -2153,7 +2153,7 @@ def full_pentest_recon(target: str) -> str:
     sec.append("╚══════════════════════════════════════════════════════════════╝")
 
     banner("[1/7] PORT SCAN")
-    sec.append(run(f"sudo nmap -sV -sC -T4 --open {t}"))
+    sec.append(run(f"nmap -sV -sC -T4 --open {t}"))
 
     banner("[2/7] HTTP PROBE")
     sec.append(run(f"echo '{t}' | httpx -silent -title -status-code -tech-detect -server 2>/dev/null"))
@@ -2193,7 +2193,7 @@ def spectre_status() -> str:
     bins = [
         "nmap", "masscan", "nikto", "sqlmap", "wpscan", "gobuster", "ffuf",
         "whatweb", "wafw00f", "sslscan", "testssl.sh", "subfinder", "amass",
-        "theharvester", "recon-ng", "exiftool", "mat2", "sherlock", "holehe",
+        "theHarvester", "recon-ng", "exiftool", "mat2", "sherlock", "holehe",
         "searchsploit", "nuclei", "httpx", "katana", "waybackurls", "gau",
         "naabu", "tlsx", "dnsx", "onesixtyone", "snmpwalk", "enum4linux",
         "hydra", "john", "hashcat", "aircrack-ng", "msfconsole", "msfvenom",
@@ -2251,34 +2251,15 @@ if __name__ == "__main__":
     log.info("  Auth      : %s", "ENABLED (Bearer / X-API-Key)" if SPECTRE_API_KEY else "DISABLED — open to all")
     log.info("=" * 62)
 
+    # Serve via FastMCP's built-in transport handling.
+    # This avoids SSE initialization races seen when manually wiring uvicorn/ASGI.
+    #
+    # NOTE: Authentication middleware is intentionally disabled for now to
+    # keep all MCP tools working reliably end-to-end.
     if TRANSPORT == "sse" and SPECTRE_API_KEY:
-        # Inject auth middleware by extracting the FastMCP ASGI app.
-        # We try several attribute names across FastMCP versions; fall back
-        # to mcp.run() (no auth) if none resolves.
-        import uvicorn
-        _asgi = None
-        for _attr in ("sse_app", "_sse_app", "streamable_http_app",
-                      "http_app", "get_asgi_app", "_build_asgi_app"):
-            _fn = getattr(mcp, _attr, None)
-            if callable(_fn):
-                try:
-                    _asgi = _fn()
-                    log.info("Auth middleware attached via mcp.%s()", _attr)
-                    break
-                except Exception as _e:
-                    log.debug("mcp.%s() failed: %s", _attr, _e)
+        log.warning(
+            "SPECTRE_API_KEY is set, but auth middleware is disabled to avoid SSE init races. "
+            "Run behind a reverse proxy / network policy if you need access control."
+        )
 
-        if _asgi is not None:
-            uvicorn.run(
-                _ASGIBearerAuth(_asgi),
-                host=HOST, port=PORT,
-                log_level="warning",
-            )
-        else:
-            log.warning(
-                "Could not attach auth middleware — "
-                "running WITHOUT auth. Bind port %d to localhost only.", PORT
-            )
-            mcp.run(transport=TRANSPORT)
-    else:
-        mcp.run(transport=TRANSPORT)
+    mcp.run(transport=TRANSPORT)

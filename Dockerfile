@@ -30,21 +30,19 @@ RUN set -eux; \
       hydra john \
       smbclient ftp \
       jq vim less file libpcap-dev \
-    || true; \
-    \
-    # Best-effort tool packages: if any are missing, don't fail the build.
-    apt-get install -y --no-install-recommends \
-      nikto gobuster ffuf whatweb wafw00f sqlmap wpscan \
+    || echo "[WARN] core apt install had missing packages — some tools may not work"; \
+    for pkg in nikto gobuster ffuf whatweb wafw00f sqlmap wpscan \
       hashcat crunch hash-identifier \
-      enum4linux snmp snmpwalk ldap-utils \
+      enum4linux snmp ldap-utils \
       exiftool mat2 \
-      aircrack-ng \
-      metasploit-framework \
-      responder crackmapexec arpspoof \
-      recon-ng amass \
-      wordlists \
-    || true; \
-    \
+      aircrack-ng masscan testssl.sh exploitdb onesixtyone \
+      mimikatz metasploit-framework \
+      responder netexec dsniff \
+      recon-ng amass wordlists dirb; do \
+      apt-get install -y --no-install-recommends "$pkg" \
+        || echo "[WARN] apt package failed: $pkg"; \
+    done; \
+    gunzip -k /usr/share/wordlists/rockyou.txt.gz 2>/dev/null || true; \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ── Install Go (for fast Go-based tools) ──────────────────────────────────────
@@ -67,13 +65,17 @@ RUN go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest 
     go install -v github.com/tomnomnom/assetfinder@latest && \
     go install -v github.com/hakluke/hakrawler@latest && \
     go install -v github.com/jaeles-project/gospider@latest && \
+    go install -v github.com/ffuf/ffuf/v2@latest && \
+    go install -v github.com/OJ/gobuster/v3@latest && \
+    go install -v github.com/owasp-amass/amass/v4/...@master && \
     cp -r /root/go/bin/* /usr/local/bin/ 2>/dev/null || true
 
 # ── Impacket (network protocol exploitation suite) ───────────────────────────
-RUN pip3 install --break-system-packages impacket 2>/dev/null || true
+RUN pip3 install --break-system-packages impacket || \
+    echo "[WARN] impacket pip install failed — non-fatal"
 
 # ── NetExec (CrackMapExec successor) ─────────────────────────────────────────
-RUN pip3 install --break-system-packages netexec 2>/dev/null || \
+RUN pip3 install --break-system-packages netexec || \
     echo "[WARN] netexec pip install failed — crackmapexec apt fallback available"
 
 # ── theHarvester (latest from GitHub for freshest sources) ───────────────────
@@ -81,32 +83,34 @@ RUN pip3 install --break-system-packages netexec 2>/dev/null || \
 # NOTE: upstream entrypoint filename/path can differ by version, so we detect it.
 RUN rm -rf /opt/theHarvester && \
     git clone --depth=1 https://github.com/laramies/theHarvester.git /opt/theHarvester && \
-    pip3 install --break-system-packages -r /opt/theHarvester/requirements/base.txt 2>/dev/null || true && \
-    ( \
-      ENTRYPOINT=; \
-      if [ -f /opt/theHarvester/theHarvester.py ]; then \
-        ENTRYPOINT=/opt/theHarvester/theHarvester.py; \
-      else \
-        # Try common nested layouts; pick the first match.
-        ENTRYPOINT=$(find /opt/theHarvester -maxdepth 3 -type f \( -name 'theHarvester.py' -o -name 'theHarvester' \) 2>/dev/null | head -n 1); \
-      fi; \
-      if [ -n "$ENTRYPOINT" ] && [ -f "$ENTRYPOINT" ]; then \
-        ln -sf "$ENTRYPOINT" /usr/local/bin/theHarvester; \
-        chmod +x "$ENTRYPOINT"; \
-        echo "[OK] theHarvester entrypoint: $ENTRYPOINT"; \
-      else \
-        echo "[WARN] theHarvester entrypoint not found; symlink not created"; \
-      fi \
-    )
+    pip3 install --break-system-packages -r /opt/theHarvester/requirements.txt || \
+    echo "[WARN] theHarvester pip requirements had errors — non-fatal"; \
+    ENTRYPOINT=; \
+    if [ -f /opt/theHarvester/theHarvester.py ]; then \
+      ENTRYPOINT=/opt/theHarvester/theHarvester.py; \
+    else \
+      # Try common nested layouts; pick the first match.
+      ENTRYPOINT=$(find /opt/theHarvester -maxdepth 3 -type f -name 'theHarvester.py' 2>/dev/null | head -n 1); \
+    fi; \
+    if [ -n "$ENTRYPOINT" ] && [ -f "$ENTRYPOINT" ]; then \
+      chmod +x "$ENTRYPOINT"; \
+      # Create wrapper script (symlink to .py fails — can't exec Python as shell)
+      printf '#!/bin/bash\nexec python3 %s "$@"\n' "$ENTRYPOINT" > /usr/local/bin/theHarvester && \
+      chmod +x /usr/local/bin/theHarvester && \
+      echo "[OK] theHarvester wrapper: $ENTRYPOINT"; \
+    else \
+      echo "[WARN] theHarvester entrypoint not found; wrapper not created"; \
+    fi
 
 
 # ── Metagoofil ────────────────────────────────────────────────────────────────
 RUN git clone --depth=1 https://github.com/opsdisk/metagoofil.git /opt/metagoofil && \
-    pip3 install --break-system-packages -r /opt/metagoofil/requirements.txt 2>/dev/null || true
+    pip3 install --break-system-packages -r /opt/metagoofil/requirements.txt || \
+    echo "[WARN] metagoofil pip requirements had errors — non-fatal"
 
 # ── SpiderFoot ────────────────────────────────────────────────────────────────
 RUN git clone --depth=1 https://github.com/smicallef/spiderfoot.git /opt/spiderfoot && \
-    pip3 install --break-system-packages -r /opt/spiderfoot/requirements.txt 2>/dev/null && \
+    pip3 install --break-system-packages -r /opt/spiderfoot/requirements.txt && \
     echo "[INFO] SpiderFoot installed" || \
     echo "[WARN] SpiderFoot requirements partially failed — non-fatal"
 
@@ -114,12 +118,13 @@ RUN git clone --depth=1 https://github.com/smicallef/spiderfoot.git /opt/spiderf
 RUN python3 -m venv /opt/mcp-venv && \
     /opt/mcp-venv/bin/pip install --upgrade pip setuptools wheel
 
-# ── MCP core (pinned stable pair — compatible with Gemini CLI SSE) ────────────
 RUN /opt/mcp-venv/bin/pip install \
     "mcp[cli]==1.9.4" \
-    "fastmcp==2.3.3" \
     "uvicorn[standard]" \
-    "starlette"
+    "starlette" \
+    "httpx>=0.27.2" \
+    "fastmcp==2.3.3" && \
+    echo "[OK] MCP SDK 1.9.4 + fastmcp 2.3.3 installed"
 
 # ── OSINT Python packages — CRITICAL (build fails if these fail) ───────────────
 RUN /opt/mcp-venv/bin/pip install \
@@ -131,61 +136,68 @@ RUN /opt/mcp-venv/bin/pip install \
     "scrapling[all]"
 
 # ── OSINT Python packages — OPTIONAL (failures are non-fatal) ─────────────────
-RUN /opt/mcp-venv/bin/pip install sherlock-project 2>/dev/null && \
+RUN /opt/mcp-venv/bin/pip install sherlock-project && \
     echo "[OK] sherlock" || echo "[WARN] sherlock failed"
 
-RUN /opt/mcp-venv/bin/pip install holehe 2>/dev/null && \
+RUN /opt/mcp-venv/bin/pip install holehe && \
     echo "[OK] holehe" || echo "[WARN] holehe failed"
 
-RUN /opt/mcp-venv/bin/pip install h8mail 2>/dev/null && \
+RUN /opt/mcp-venv/bin/pip install h8mail && \
     echo "[OK] h8mail" || echo "[WARN] h8mail failed"
 
-RUN /opt/mcp-venv/bin/pip install maigret 2>/dev/null && \
+RUN /opt/mcp-venv/bin/pip install maigret && \
     echo "[OK] maigret" || echo "[WARN] maigret failed"
 
-RUN /opt/mcp-venv/bin/pip install socialscan 2>/dev/null && \
+RUN /opt/mcp-venv/bin/pip install socialscan && \
     echo "[OK] socialscan" || echo "[WARN] socialscan failed"
 
-RUN /opt/mcp-venv/bin/pip install ghunt 2>/dev/null && \
+RUN /opt/mcp-venv/bin/pip install ghunt && \
     echo "[OK] ghunt" || echo "[WARN] ghunt failed"
 
-RUN /opt/mcp-venv/bin/pip install onionsearch 2>/dev/null && \
+RUN /opt/mcp-venv/bin/pip install onionsearch && \
     echo "[OK] onionsearch" || echo "[WARN] onionsearch failed"
 
-RUN /opt/mcp-venv/bin/pip install instaloader 2>/dev/null && \
+RUN /opt/mcp-venv/bin/pip install instaloader && \
     echo "[OK] instaloader" || echo "[WARN] instaloader failed"
 
 # NOTE: twint-fork removed — project abandoned since 2022, breaks consistently.
 # Use reddit_user / twitter search via google_dork instead.
 
 # XSStrike — install gracefully; create symlink only if binary exists
-RUN /opt/mcp-venv/bin/pip install xsstrike 2>/dev/null && \
+RUN /opt/mcp-venv/bin/pip install xsstrike && \
     ( ln -sf /opt/mcp-venv/bin/xsstrike /usr/local/bin/xssstrike 2>/dev/null || true ) && \
     echo "[OK] xsstrike" || echo "[WARN] xsstrike failed — tool will report error when called"
 
 # OSRFramework — optional, tools fall back to sherlock/holehe if absent
-RUN /opt/mcp-venv/bin/pip install osrframework 2>/dev/null && \
+RUN /opt/mcp-venv/bin/pip install osrframework && \
     echo "[OK] osrframework" || echo "[WARN] osrframework failed — sherlock/holehe fallbacks active"
 
-RUN /opt/mcp-venv/bin/pip install phoneinfoga 2>/dev/null && \
+RUN /opt/mcp-venv/bin/pip install phoneinfoga && \
     echo "[OK] phoneinfoga" || echo "[WARN] phoneinfoga failed"
 
+RUN ln -sf /opt/mcp-venv/bin/shodan /usr/local/bin/shodan
+
 # ── Playwright browsers for Scrapling dynamic/stealth modes ──────────────────
-RUN /opt/mcp-venv/bin/python3 -m playwright install --with-deps chromium 2>/dev/null && \
+RUN /opt/mcp-venv/bin/python3 -m playwright install --with-deps chromium && \
     echo "[OK] playwright chromium" || echo "[WARN] playwright install failed"
 
 # ── commix (command injection exploiter) ─────────────────────────────────────
 RUN git clone --depth=1 https://github.com/commixproject/commix.git /opt/commix && \
-    ln -sf /opt/commix/commix.py /usr/local/bin/commix
+    ln -sf /opt/commix/commix.py /usr/local/bin/commix && \
+    chmod +x /opt/commix/commix.py
 
 # ── PhoneInfoga binary (faster than pip version) ─────────────────────────────
 RUN ARCH=amd64 && \
     LATEST=$(curl -sSL https://api.github.com/repos/sundowndev/phoneinfoga/releases/latest \
         | grep tag_name | cut -d'"' -f4) && \
     curl -sSL "https://github.com/sundowndev/phoneinfoga/releases/download/${LATEST}/phoneinfoga_Linux_${ARCH}.tar.gz" \
-        | tar -xzf - -C /usr/local/bin/ phoneinfoga 2>/dev/null && \
+        | tar -xzf - -C /usr/local/bin/ phoneinfoga && \
     chmod +x /usr/local/bin/phoneinfoga && echo "[OK] phoneinfoga binary" || \
     echo "[WARN] phoneinfoga binary download failed — pip version used as fallback"
+
+# ── Force-fix httpx (downstream tools like ghunt/holehe/duckpy downgrade it) ─
+RUN /opt/mcp-venv/bin/pip install --upgrade --force-reinstall "httpx==0.28.1" && \
+    echo "[OK] httpx pinned to 0.28.1 after all tool installs"
 
 # ── Copy server file ──────────────────────────────────────────────────────────
 RUN mkdir -p /opt/spectre /tmp/spectre
