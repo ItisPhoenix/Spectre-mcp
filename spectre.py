@@ -65,6 +65,42 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 mcp = FastMCP("spectre", host=HOST, port=PORT)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TIMEOUT CALCULATION  (auto-determine based on scan complexity)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _calc_scan_timeout(flags: str = "", extra: str = "") -> int:
+    """Return an appropriate timeout (seconds) based on scan flags/target complexity.
+
+    Logic:
+      - Full port scan (-p- / -p 1-65535) or aggressive (-A) → 1800s
+      - Vulnerability scripts (--script vuln) or UDP (-sU)     → 1200s
+      - Service version detection (-sV -sC)                    → 1200s
+      - Fast/throttled scans (-T4, -F, --top-ports, --min-rate) → 600s
+      - Default                                                → 1200s
+    """
+    combined = f"{flags} {extra}".lower()
+
+    # Heaviest scans — all ports or aggressive mode
+    if any(k in combined for k in ("-p-", "-p 1-65535", "-p 1-65535", "-a ", "--all-ports")):
+        return 1800
+    if "-a " in combined or combined.endswith("-a"):
+        return 1800
+
+    # Vulnerability / UDP scans — slower than basic but not full-port
+    if "--script vuln" in combined or "-sU" in combined:
+        return 1200
+
+    # Service version detection
+    if "-sv" in combined or "-sc" in combined or "-sV" in combined or "-sC" in combined:
+        return 1200
+
+    # Fast scans
+    if any(k in combined for k in ("-t4", "-t5", "-f ", "--fast", "--top-ports", "--min-rate")):
+        return 600
+
+    return 1200  # conservative default
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ASGI AUTH MIDDLEWARE  (pure-ASGI; works regardless of FastMCP internals)
@@ -717,7 +753,7 @@ def abuseipdb_check(ip: str, api_key: str = "") -> str:
 def nmap_scan(target: str, flags: str = "-sV -sC -T4 --open") -> str:
     """Nmap port scan with service/version detection."""
     if err := require(target): return err
-    return run(f"nmap {san(flags)} {san(target)}")
+    return run(f"nmap {san(flags)} {san(target)}", timeout=_calc_scan_timeout(flags))
 
 
 @mcp.tool()
@@ -725,7 +761,7 @@ def nmap_vuln(target: str, ports: str = "") -> str:
     """Nmap vulnerability scripts scan — detects known CVEs."""
     if err := require(target): return err
     p = f"-p {san(ports)}" if ports else ""
-    return run(f"nmap --script vuln {p} {san(target)}", timeout=900)
+    return run(f"nmap --script vuln {p} {san(target)}", timeout=_calc_scan_timeout("--script vuln"))
 
 
 @mcp.tool()
@@ -734,7 +770,7 @@ def nmap_full(target: str) -> str:
     if err := require(target): return err
     return run(
         f"nmap -sV -sC -O -A -p- --min-rate 2000 {san(target)}",
-        timeout=1200,
+        timeout=_calc_scan_timeout("-A -p-"),
     )
 
 
@@ -744,7 +780,7 @@ def nmap_udp_scan(target: str, options: str = "") -> str:
     if err := require(target): return err
     return run_argv(
         ["nmap", "-sU", "--top-ports", "200", "-T4"] + split_opts(options) + [san(target)],
-        timeout=900,
+        timeout=_calc_scan_timeout("-sU"),
     )
 
 
@@ -752,8 +788,11 @@ def nmap_udp_scan(target: str, options: str = "") -> str:
 def masscan_scan(target: str, ports: str = "1-65535", rate: str = "5000") -> str:
     """Masscan — world's fastest port scanner."""
     if err := require(target): return err
+    # Auto-calc: full port range = 1800s, otherwise 600s
+    timeout = 1800 if "1-65535" in ports or "1-65535" in ports else 600
     return run(
-        f"masscan {san(target)} -p{san(ports)} --rate {san(rate)}"
+        f"masscan {san(target)} -p{san(ports)} --rate {san(rate)}",
+        timeout=timeout,
     )
 
 
@@ -1767,14 +1806,20 @@ def hydra_attack(target: str, options: str = "") -> str:
     """Hydra brute-force login attack.
     Example options: -l admin -P /usr/share/wordlists/rockyou.txt ssh://target"""
     if err := require(target): return err
-    return run_argv(["hydra"] + split_opts(options) + [san(target)], timeout=900)
+    # Auto-calc: check if large wordlist is used
+    opts_lower = options.lower()
+    timeout = 1800 if "rockyou" in opts_lower or "-c " in opts_lower or "-C " in opts_lower else 900
+    return run_argv(["hydra"] + split_opts(options) + [san(target)], timeout=timeout)
 
 
 @mcp.tool()
 def john_crack(hashfile: str, options: str = "--wordlist=/usr/share/wordlists/rockyou.txt") -> str:
     """Crack password hashes with John the Ripper from a hash file."""
     if err := require(hashfile): return err
-    return run_argv(["john"] + split_opts(options) + [san(hashfile)], timeout=900)
+    # Auto-calc: rockyou wordlist = 1800s, otherwise 900s
+    opts_lower = options.lower()
+    timeout = 1800 if "rockyou" in opts_lower else 900
+    return run_argv(["john"] + split_opts(options) + [san(hashfile)], timeout=timeout)
 
 
 @mcp.tool()
@@ -1782,7 +1827,10 @@ def hashcat_crack(hashfile: str, options: str = "-a 0 -m 0 /usr/share/wordlists/
     """Crack hashes with Hashcat.
     Common -m values: 0=MD5  1000=NTLM  1800=sha512crypt"""
     if err := require(hashfile): return err
-    return run_argv(["hashcat"] + split_opts(options) + [san(hashfile)], timeout=900)
+    # Auto-calc: rockyou wordlist = 1800s, otherwise 900s
+    opts_lower = options.lower()
+    timeout = 1800 if "rockyou" in opts_lower else 900
+    return run_argv(["hashcat"] + split_opts(options) + [san(hashfile)], timeout=timeout)
 
 
 @mcp.tool()
