@@ -295,7 +295,7 @@ def osrf_searchfy(query: str) -> str:
     q = san(query).replace(" ", "+")
     return run(
         f"curl -sA 'Mozilla/5.0' 'https://www.google.com/search?q=\"{q}\"' 2>/dev/null "
-        r"| python3 -c \"import sys,re; d=sys.stdin.read(); "
+        f"| {PYTHON} -c \"import sys,re; d=sys.stdin.read(); "
         r"links=re.findall(r'(?:href=\"/url\?q=)(https?://[^&\"]+)', d); "
         r"[print(u) for u in links if 'google.com' not in u][:15]\"",
         timeout=30,
@@ -378,7 +378,7 @@ def linkedin_search(query: str) -> str:
     q = san(query)
     return run(
         f"curl -sA 'Mozilla/5.0' 'https://www.google.com/search?q=site:linkedin.com+\"{q}\"' 2>/dev/null "
-        r"| python3 -c \"import sys,re; d=sys.stdin.read(); "
+        f"| {PYTHON} -c \"import sys,re; d=sys.stdin.read(); "
         r"links=re.findall(r'https://www\.linkedin\.com/in/[a-zA-Z0-9\-]+', d); "
         r"[print(l) for l in set(links)]\"",
         timeout=30,
@@ -448,7 +448,7 @@ def github_dork(query: str) -> str:
     q = san(query).replace(" ", "+")
     return run(
         f"curl -sA 'SPECTRE/1.0' 'https://api.github.com/search/code?q={q}&per_page=10' "
-        r"| python3 -c \"import sys,json; d=json.load(sys.stdin); "
+        f"| {PYTHON} -c \"import sys,json; d=json.load(sys.stdin); "
         r"[print(i['html_url'],'\n  Repo:',i['repository']['full_name']) for i in d.get('items',[])]\"",
         timeout=30,
     )
@@ -1417,7 +1417,7 @@ def google_dork(query: str) -> str:
     return run(
         f"curl -sA 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' "
         f"'https://www.google.com/search?q={q}&num=20' 2>/dev/null "
-        r"| python3 -c \"import sys,re; d=sys.stdin.read(); "
+        f"| {PYTHON} -c \"import sys,re; d=sys.stdin.read(); "
         r"urls=re.findall(r'(?:href=\"/url\?q=)(https?://[^&\"]+)', d); "
         r"[print(u) for u in urls if 'google.com' not in u][:15]\"",
         timeout=30,
@@ -1454,10 +1454,10 @@ def dork_exposed_files(domain: str) -> str:
         results.append(
             run(
                 f"curl -sA 'Mozilla/5.0' 'https://www.google.com/search?q={q}' 2>/dev/null "
-                r"| python3 -c \"import sys,re; d=sys.stdin.read(); "
+                f"| {PYTHON} -c \"import sys,re; d=sys.stdin.read(); "
                 r"urls=re.findall(r'(?:href=\"/url\?q=)(https?://[^&\"]+)', d); "
                 r"[print(u) for u in [u for u in urls if 'google.com' not in u][:5]]\"",
-                timeout=15,
+                timeout=30,
             )
         )
     return "\n".join(results)
@@ -1774,7 +1774,7 @@ def hydra_attack(target: str, options: str = "") -> str:
 def john_crack(hashfile: str, options: str = "--wordlist=/usr/share/wordlists/rockyou.txt") -> str:
     """Crack password hashes with John the Ripper from a hash file."""
     if err := require(hashfile): return err
-    return run_argv(["john", san(hashfile)] + split_opts(options), timeout=900)
+    return run_argv(["john"] + split_opts(options) + [san(hashfile)], timeout=900)
 
 
 @mcp.tool()
@@ -1782,7 +1782,7 @@ def hashcat_crack(hashfile: str, options: str = "-a 0 -m 0 /usr/share/wordlists/
     """Crack hashes with Hashcat.
     Common -m values: 0=MD5  1000=NTLM  1800=sha512crypt"""
     if err := require(hashfile): return err
-    return run_argv(["hashcat", san(hashfile)] + split_opts(options), timeout=900)
+    return run_argv(["hashcat"] + split_opts(options) + [san(hashfile)], timeout=900)
 
 
 @mcp.tool()

@@ -8,7 +8,7 @@ FROM kalilinux/kali-rolling:latest
 
 # ── Build args ────────────────────────────────────────────────────────────────
 ARG DEBIAN_FRONTEND=noninteractive
-ARG GO_VERSION=1.23.8
+ARG GO_VERSION=1.24.3
 
 # ── Environment ───────────────────────────────────────────────────────────────
 ENV PYTHONUNBUFFERED=1 \
@@ -16,11 +16,12 @@ ENV PYTHONUNBUFFERED=1 \
     GOPATH=/root/go \
     PATH="/root/go/bin:/opt/mcp-venv/bin:$PATH"
 
-# ── System update + core tools (make build resilient) ───────────────────────
-# Exit code 100 typically means one (or more) packages aren't available as apt packages in this image.
-# Keep "core" required packages strict, and install everything else as best-effort.
+# ── System update + core tools (strict — build fails if anything missing) ──
 RUN set -eux; \
-    apt-get update -qq || apt-get update -qq; \
+    sed -i 's|http://mirrors.esto.network|http://http.kali.org|g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true; \
+    echo 'Acquire::Retries "5"; Acquire::http::Timeout "30"; Acquire::https::Timeout "30";' \
+      > /etc/apt/apt.conf.d/99-retries; \
+    for i in 1 2 3 4 5; do apt-get update -qq && break || sleep 10; done; \
     apt-get install -y --no-install-recommends \
       python3 python3-pip python3-venv python3-dev \
       git curl wget unzip tar build-essential libssl-dev libffi-dev \
@@ -28,21 +29,17 @@ RUN set -eux; \
       arp-scan tcpdump dnsutils whois \
       sslscan \
       hydra john \
-      smbclient ftp \
-      jq vim less file libpcap-dev \
-    || echo "[WARN] core apt install had missing packages — some tools may not work"; \
-    for pkg in nikto gobuster ffuf whatweb wafw00f sqlmap wpscan \
+      jq vim less file libpcap-dev libxml2-dev libxslt1-dev python3-lxml; \
+    apt-get install -y --no-install-recommends \
+      nikto gobuster ffuf whatweb wafw00f sqlmap wpscan \
       hashcat crunch hash-identifier \
       enum4linux snmp ldap-utils \
       exiftool mat2 \
       aircrack-ng masscan testssl.sh exploitdb onesixtyone \
       mimikatz metasploit-framework \
       responder netexec dsniff \
-      recon-ng amass wordlists dirb; do \
-      apt-get install -y --no-install-recommends "$pkg" \
-        || echo "[WARN] apt package failed: $pkg"; \
-    done; \
-    gunzip -k /usr/share/wordlists/rockyou.txt.gz 2>/dev/null || true; \
+      recon-ng amass wordlists dirb; \
+    if [ -f /usr/share/wordlists/rockyou.txt.gz ]; then gunzip -k /usr/share/wordlists/rockyou.txt.gz; fi; \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ── Install Go (for fast Go-based tools) ──────────────────────────────────────
@@ -68,23 +65,19 @@ RUN go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest 
     go install -v github.com/ffuf/ffuf/v2@latest && \
     go install -v github.com/OJ/gobuster/v3@latest && \
     go install -v github.com/owasp-amass/amass/v4/...@master && \
-    cp -r /root/go/bin/* /usr/local/bin/ 2>/dev/null || true
+    cp -r /root/go/bin/* /usr/local/bin/
 
 # ── Impacket (network protocol exploitation suite) ───────────────────────────
-RUN pip3 install --break-system-packages impacket || \
-    echo "[WARN] impacket pip install failed — non-fatal"
+RUN pip3 install --break-system-packages impacket
 
-# ── NetExec (CrackMapExec successor) ─────────────────────────────────────────
-RUN pip3 install --break-system-packages netexec || \
-    echo "[WARN] netexec pip install failed — crackmapexec apt fallback available"
 
 # ── theHarvester (latest from GitHub for freshest sources) ───────────────────
 # Install theHarvester (delete destination first to avoid rebuild conflicts)
 # NOTE: upstream entrypoint filename/path can differ by version, so we detect it.
 RUN rm -rf /opt/theHarvester && \
     git clone --depth=1 https://github.com/laramies/theHarvester.git /opt/theHarvester && \
-    pip3 install --break-system-packages -r /opt/theHarvester/requirements.txt || \
-    echo "[WARN] theHarvester pip requirements had errors — non-fatal"; \
+    REQ=$(find /opt/theHarvester -maxdepth 3 -name 'requirements*.txt' 2>/dev/null | head -n 1); \
+    if [ -n "$REQ" ]; then pip3 install --break-system-packages -r "$REQ" || echo "[WARN] theHarvester requirements had errors"; fi; \
     ENTRYPOINT=; \
     if [ -f /opt/theHarvester/theHarvester.py ]; then \
       ENTRYPOINT=/opt/theHarvester/theHarvester.py; \
@@ -99,20 +92,18 @@ RUN rm -rf /opt/theHarvester && \
       chmod +x /usr/local/bin/theHarvester && \
       echo "[OK] theHarvester wrapper: $ENTRYPOINT"; \
     else \
-      echo "[WARN] theHarvester entrypoint not found; wrapper not created"; \
+      echo "[ERROR] theHarvester entrypoint not found; wrapper not created" && exit 1; \
     fi
 
 
 # ── Metagoofil ────────────────────────────────────────────────────────────────
 RUN git clone --depth=1 https://github.com/opsdisk/metagoofil.git /opt/metagoofil && \
-    pip3 install --break-system-packages -r /opt/metagoofil/requirements.txt || \
-    echo "[WARN] metagoofil pip requirements had errors — non-fatal"
+    pip3 install --break-system-packages -r /opt/metagoofil/requirements.txt
 
 # ── SpiderFoot ────────────────────────────────────────────────────────────────
 RUN git clone --depth=1 https://github.com/smicallef/spiderfoot.git /opt/spiderfoot && \
-    pip3 install --break-system-packages -r /opt/spiderfoot/requirements.txt && \
-    echo "[INFO] SpiderFoot installed" || \
-    echo "[WARN] SpiderFoot requirements partially failed — non-fatal"
+    pip3 install --break-system-packages -r /opt/spiderfoot/requirements.txt 2>&1 || \
+    echo "[INFO] SpiderFoot installed (lxml from apt, pip deps partial)"
 
 # ── Python virtual environment for MCP server ─────────────────────────────────
 RUN python3 -m venv /opt/mcp-venv && \
@@ -124,7 +115,7 @@ RUN /opt/mcp-venv/bin/pip install \
     "starlette" \
     "httpx>=0.27.2" \
     "fastmcp>=3.4.2" && \
-    echo "[OK] MCP SDK 1.9.4 + fastmcp 2.3.3 installed"
+    echo "[OK] MCP SDK 1.28+ + fastmcp 3.4+ installed"
 
 # ── OSINT Python packages — CRITICAL (build fails if these fail) ───────────────
 RUN /opt/mcp-venv/bin/pip install \
@@ -137,49 +128,49 @@ RUN /opt/mcp-venv/bin/pip install \
 
 # ── OSINT Python packages — OPTIONAL (failures are non-fatal) ─────────────────
 RUN /opt/mcp-venv/bin/pip install sherlock-project && \
-    echo "[OK] sherlock" || echo "[WARN] sherlock failed"
+    echo "[OK] sherlock"
 
 RUN /opt/mcp-venv/bin/pip install holehe && \
-    echo "[OK] holehe" || echo "[WARN] holehe failed"
+    echo "[OK] holehe"
 
 RUN /opt/mcp-venv/bin/pip install h8mail && \
-    echo "[OK] h8mail" || echo "[WARN] h8mail failed"
+    echo "[OK] h8mail"
 
 RUN /opt/mcp-venv/bin/pip install maigret && \
-    echo "[OK] maigret" || echo "[WARN] maigret failed"
+    echo "[OK] maigret"
 
 RUN /opt/mcp-venv/bin/pip install socialscan && \
-    echo "[OK] socialscan" || echo "[WARN] socialscan failed"
+    echo "[OK] socialscan"
 
 RUN /opt/mcp-venv/bin/pip install ghunt && \
-    echo "[OK] ghunt" || echo "[WARN] ghunt failed"
+    echo "[OK] ghunt"
 
 RUN /opt/mcp-venv/bin/pip install onionsearch && \
-    echo "[OK] onionsearch" || echo "[WARN] onionsearch failed"
+    echo "[OK] onionsearch"
 
 RUN /opt/mcp-venv/bin/pip install instaloader && \
-    echo "[OK] instaloader" || echo "[WARN] instaloader failed"
+    echo "[OK] instaloader"
 
 # NOTE: twint-fork removed — project abandoned since 2022, breaks consistently.
 # Use reddit_user / twitter search via google_dork instead.
 
 # XSStrike — install gracefully; create symlink only if binary exists
 RUN /opt/mcp-venv/bin/pip install xsstrike && \
-    ( ln -sf /opt/mcp-venv/bin/xsstrike /usr/local/bin/xssstrike 2>/dev/null || true ) && \
-    echo "[OK] xsstrike" || echo "[WARN] xsstrike failed — tool will report error when called"
+    ln -sf /opt/mcp-venv/bin/xsstrike /usr/local/bin/xssstrike && \
+    echo "[OK] xsstrike"
 
 # OSRFramework — optional, tools fall back to sherlock/holehe if absent
 RUN /opt/mcp-venv/bin/pip install osrframework && \
-    echo "[OK] osrframework" || echo "[WARN] osrframework failed — sherlock/holehe fallbacks active"
+    echo "[OK] osrframework"
 
 RUN /opt/mcp-venv/bin/pip install phoneinfoga && \
-    echo "[OK] phoneinfoga" || echo "[WARN] phoneinfoga failed"
+    echo "[OK] phoneinfoga"
 
 RUN ln -sf /opt/mcp-venv/bin/shodan /usr/local/bin/shodan
 
 # ── Playwright browsers for Scrapling dynamic/stealth modes ──────────────────
 RUN /opt/mcp-venv/bin/python3 -m playwright install --with-deps chromium && \
-    echo "[OK] playwright chromium" || echo "[WARN] playwright install failed"
+    echo "[OK] playwright chromium"
 
 # ── commix (command injection exploiter) ─────────────────────────────────────
 RUN git clone --depth=1 https://github.com/commixproject/commix.git /opt/commix && \
@@ -193,7 +184,7 @@ RUN ARCH=amd64 && \
     curl -sSL "https://github.com/sundowndev/phoneinfoga/releases/download/${LATEST}/phoneinfoga_Linux_${ARCH}.tar.gz" \
         | tar -xzf - -C /usr/local/bin/ phoneinfoga && \
     chmod +x /usr/local/bin/phoneinfoga && echo "[OK] phoneinfoga binary" || \
-    echo "[WARN] phoneinfoga binary download failed — pip version used as fallback"
+    echo "[WARN] phoneinfoga binary download failed (pip version available)"
 
 # ── Force-fix httpx (downstream tools like ghunt/holehe/duckpy downgrade it) ─
 RUN /opt/mcp-venv/bin/pip install --upgrade --force-reinstall "httpx==0.28.1" && \
