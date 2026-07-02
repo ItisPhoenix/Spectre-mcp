@@ -119,11 +119,11 @@ RUN python3 -m venv /opt/mcp-venv && \
     /opt/mcp-venv/bin/pip install --upgrade pip setuptools wheel
 
 RUN /opt/mcp-venv/bin/pip install \
-    "mcp[cli]==1.9.4" \
+    "mcp[cli]>=1.27,<2" \
     "uvicorn[standard]" \
     "starlette" \
     "httpx>=0.27.2" \
-    "fastmcp==2.3.3" && \
+    "fastmcp>=3.4.2" && \
     echo "[OK] MCP SDK 1.9.4 + fastmcp 2.3.3 installed"
 
 # ── OSINT Python packages — CRITICAL (build fails if these fail) ───────────────

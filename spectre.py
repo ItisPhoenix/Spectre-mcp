@@ -22,6 +22,7 @@ import re
 import json
 import logging
 import tempfile
+from typing import Optional
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -1121,7 +1122,7 @@ def scrapling_smart_content(url: str, mode: str = "fetcher") -> str:
 
 
 @mcp.tool()
-def scrapling_session_fetch(url: str, cookies: dict = None, mode: str = "fetcher") -> str:
+def scrapling_session_fetch(url: str, cookies: Optional[dict] = None, mode: str = "fetcher") -> str:
     """Fetch a page using a persistent session (for authenticated or stateful scraping).
     cookies: dictionary of cookies to use."""
     if err := require(url): return err
@@ -2121,7 +2122,7 @@ def full_person_profile(name: str = "", email: str = "",
     if name:
         n = san(name)
         sec.append(f"\n[SOCIAL SEARCH: {n}]")
-        query = n.replace(" ", "+")
+        query = urllib.parse.quote(n)
         sec.append(run(
             f"curl -sA 'Mozilla/5.0' 'https://www.google.com/search?q=\"{query}\"' 2>/dev/null "
             r"| python3 -c \"import sys,re; d=sys.stdin.read(); "
