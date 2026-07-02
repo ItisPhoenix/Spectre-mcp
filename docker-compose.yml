@@ -18,7 +18,7 @@ services:
       MCP_TRANSPORT: sse
       MCP_HOST: 0.0.0.0
       MCP_PORT: "8001"
-      TOOL_TIMEOUT: "1200"
+      TOOL_TIMEOUT: "1800"
       SPECTRE_PYTHON: /opt/mcp-venv/bin/python3
       SPECTRE_WORDLIST: /usr/share/wordlists/dirb/common.txt
 

@@ -66,43 +66,6 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 mcp = FastMCP("spectre", host=HOST, port=PORT)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TIMEOUT CALCULATION  (auto-determine based on scan complexity)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _calc_scan_timeout(flags: str = "", extra: str = "") -> int:
-    """Return an appropriate timeout (seconds) based on scan flags/target complexity.
-
-    Logic:
-      - Full port scan (-p- / -p 1-65535) or aggressive (-A) → 1800s
-      - Vulnerability scripts (--script vuln) or UDP (-sU)     → 1200s
-      - Service version detection (-sV -sC)                    → 1200s
-      - Fast/throttled scans (-T4, -F, --top-ports, --min-rate) → 600s
-      - Default                                                → 1200s
-    """
-    combined = f"{flags} {extra}".lower()
-
-    # Heaviest scans — all ports or aggressive mode
-    if any(k in combined for k in ("-p-", "-p 1-65535", "-p 1-65535", "-a ", "--all-ports")):
-        return 1800
-    if "-a " in combined or combined.endswith("-a"):
-        return 1800
-
-    # Vulnerability / UDP scans — slower than basic but not full-port
-    if "--script vuln" in combined or "-sU" in combined:
-        return 1200
-
-    # Service version detection
-    if "-sv" in combined or "-sc" in combined or "-sV" in combined or "-sC" in combined:
-        return 1200
-
-    # Fast scans
-    if any(k in combined for k in ("-t4", "-t5", "-f ", "--fast", "--top-ports", "--min-rate")):
-        return 600
-
-    return 1200  # conservative default
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # ASGI AUTH MIDDLEWARE  (pure-ASGI; works regardless of FastMCP internals)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -750,46 +713,44 @@ def abuseipdb_check(ip: str, api_key: str = "") -> str:
 # ─── NETWORK & PORT INTELLIGENCE ─────────────────────────────────────────────
 
 @mcp.tool()
-def nmap_scan(target: str, flags: str = "-sV -sC -T4 --open") -> str:
+def nmap_scan(target: str, flags: str = "-sV -sC -T4 --open", timeout: int = 1200) -> str:
     """Nmap port scan with service/version detection."""
     if err := require(target): return err
-    return run(f"nmap {san(flags)} {san(target)}", timeout=_calc_scan_timeout(flags))
+    return run(f"nmap {san(flags)} {san(target)}", timeout=timeout)
 
 
 @mcp.tool()
-def nmap_vuln(target: str, ports: str = "") -> str:
+def nmap_vuln(target: str, ports: str = "", timeout: int = 1800) -> str:
     """Nmap vulnerability scripts scan — detects known CVEs."""
     if err := require(target): return err
     p = f"-p {san(ports)}" if ports else ""
-    return run(f"nmap --script vuln {p} {san(target)}", timeout=_calc_scan_timeout("--script vuln"))
+    return run(f"nmap --script vuln {p} {san(target)}", timeout=timeout)
 
 
 @mcp.tool()
-def nmap_full(target: str) -> str:
+def nmap_full(target: str, timeout: int = 1800) -> str:
     """Full nmap — all 65535 ports, OS detection, version, scripts."""
     if err := require(target): return err
     return run(
         f"nmap -sV -sC -O -A -p- --min-rate 2000 {san(target)}",
-        timeout=_calc_scan_timeout("-A -p-"),
+        timeout=timeout,
     )
 
 
 @mcp.tool()
-def nmap_udp_scan(target: str, options: str = "") -> str:
+def nmap_udp_scan(target: str, options: str = "", timeout: int = 1200) -> str:
     """Nmap UDP scan on the top 200 UDP ports of a target."""
     if err := require(target): return err
     return run_argv(
         ["nmap", "-sU", "--top-ports", "200", "-T4"] + split_opts(options) + [san(target)],
-        timeout=_calc_scan_timeout("-sU"),
+        timeout=timeout,
     )
 
 
 @mcp.tool()
-def masscan_scan(target: str, ports: str = "1-65535", rate: str = "5000") -> str:
+def masscan_scan(target: str, ports: str = "1-65535", rate: str = "5000", timeout: int = 1800) -> str:
     """Masscan — world's fastest port scanner."""
     if err := require(target): return err
-    # Auto-calc: full port range = 1800s, otherwise 600s
-    timeout = 1800 if "1-65535" in ports or "1-65535" in ports else 600
     return run(
         f"masscan {san(target)} -p{san(ports)} --rate {san(rate)}",
         timeout=timeout,
@@ -797,22 +758,22 @@ def masscan_scan(target: str, ports: str = "1-65535", rate: str = "5000") -> str
 
 
 @mcp.tool()
-def naabu_scan(target: str, ports: str = "") -> str:
+def naabu_scan(target: str, ports: str = "", timeout: int = 300) -> str:
     """Naabu — fast port scanner with service discovery."""
     if err := require(target): return err
     p = f"-p {san(ports)}" if ports else "-top-ports 1000"
-    return run(f"naabu -host {san(target)} {p} -silent 2>/dev/null", timeout=120)
+    return run(f"naabu -host {san(target)} {p} -silent 2>/dev/null", timeout=timeout)
 
 
 @mcp.tool()
-def httpx_probe(targets: str) -> str:
+def httpx_probe(targets: str, timeout: int = 300) -> str:
     """Httpx — probe HTTP/HTTPS services: status codes, titles, tech stack.
     Pass comma-separated targets or a single host."""
     if err := require(targets): return err
     t = san(targets).replace(",", "\n")
     return run(
         f"echo '{t}' | httpx -silent -title -status-code -tech-detect -server -content-length 2>/dev/null",
-        timeout=120,
+        timeout=timeout,
     )
 
 
@@ -865,46 +826,46 @@ def wafw00f_scan(target: str, options: str = "") -> str:
 
 
 @mcp.tool()
-def nikto_scan(target: str, flags: str = "") -> str:
+def nikto_scan(target: str, flags: str = "", timeout: int = 600) -> str:
     """Nikto — web server vulnerability and misconfiguration scanner."""
     if err := require(target): return err
-    return run(f"nikto -h {san(target)} {san(flags)}", timeout=300)
+    return run(f"nikto -h {san(target)} {san(flags)}", timeout=timeout)
 
 
 @mcp.tool()
-def nuclei_scan(target: str, templates: str = "", options: str = "-severity critical,high,medium") -> str:
+def nuclei_scan(target: str, templates: str = "", options: str = "-severity critical,high,medium", timeout: int = 1800) -> str:
     """Nuclei — vulnerability scanner with 9000+ templates.
     Optionally specify a template path; defaults to automatic scan."""
     if err := require(target): return err
     t = f"-t {san(templates)}" if templates else "-automatic-scan"
     return run(
         f"nuclei -u {san(target)} {t} {san(options)} -silent 2>/dev/null",
-        timeout=600,
+        timeout=timeout,
     )
 
 
 @mcp.tool()
-def nuclei_cve_scan(target: str, cve: str = "") -> str:
+def nuclei_cve_scan(target: str, cve: str = "", timeout: int = 600) -> str:
     """Run Nuclei CVE templates against a target."""
     if err := require(target): return err
     t = san(target)
     c = f"-t cves/{san(cve)}.yaml" if cve else "-t cves/"
-    return run(f"nuclei -u {t} {c} -silent 2>/dev/null", timeout=300)
+    return run(f"nuclei -u {t} {c} -silent 2>/dev/null", timeout=timeout)
 
 
 @mcp.tool()
-def gobuster_dir(target: str, wordlist: str = "", extensions: str = "php,html,js,txt,json,xml,bak,zip") -> str:
+def gobuster_dir(target: str, wordlist: str = "", extensions: str = "php,html,js,txt,json,xml,bak,zip", timeout: int = 600) -> str:
     """Gobuster — directory and file brute force."""
     if err := require(target): return err
     wl = san(wordlist) if wordlist else WORDLIST
     return run(
         f"gobuster dir -u {san(target)} -w {wl} -x {san(extensions)} -q --no-error 2>/dev/null",
-        timeout=300,
+        timeout=timeout,
     )
 
 
 @mcp.tool()
-def ffuf_fuzz(target: str, wordlist: str = "", options: str = "") -> str:
+def ffuf_fuzz(target: str, wordlist: str = "", options: str = "", timeout: int = 600) -> str:
     """FFUF — web fuzzer for directories, params, virtual hosts.
     Place FUZZ in the URL; if absent it is appended automatically."""
     if err := require(target): return err
@@ -914,17 +875,17 @@ def ffuf_fuzz(target: str, wordlist: str = "", options: str = "") -> str:
     return run_argv(
         ["ffuf", "-u", url, "-w", wl, "-mc", "200,201,204,301,302,307,401,403,405", "-s"]
         + split_opts(options),
-        timeout=300,
+        timeout=timeout,
     )
 
 
 @mcp.tool()
-def katana_crawl(target: str, depth: str = "3") -> str:
+def katana_crawl(target: str, depth: str = "3", timeout: int = 600) -> str:
     """Katana — next-gen web crawler with JavaScript parsing."""
     if err := require(target): return err
     return run(
         f"katana -u {san(target)} -d {san(depth)} -silent -jc 2>/dev/null | head -100",
-        timeout=300,
+        timeout=timeout,
     )
 
 
@@ -936,10 +897,10 @@ def sslscan_check(target: str, options: str = "") -> str:
 
 
 @mcp.tool()
-def testssl_run(target: str, options: str = "") -> str:
+def testssl_run(target: str, options: str = "", timeout: int = 600) -> str:
     """Check SSL/TLS weaknesses including BEAST, POODLE, Heartbleed. Format: host:port"""
     if err := require(target): return err
-    return run_argv(["testssl.sh"] + split_opts(options) + [san(target)], timeout=300)
+    return run_argv(["testssl.sh"] + split_opts(options) + [san(target)], timeout=timeout)
 
 
 @mcp.tool()
@@ -1271,19 +1232,19 @@ def scrapling_cli(command: str) -> str:
 
 
 @mcp.tool()
-def sqlmap_scan(target: str, flags: str = "--batch --level=2 --risk=2") -> str:
+def sqlmap_scan(target: str, flags: str = "--batch --level=2 --risk=2", timeout: int = 600) -> str:
     """SQLmap — automated SQL injection detection and exploitation."""
     if err := require(target): return err
-    return run(f"sqlmap -u '{san(target)}' {san(flags)}", timeout=300)
+    return run(f"sqlmap -u '{san(target)}' {san(flags)}", timeout=timeout)
 
 
 @mcp.tool()
-def wpscan_scan(target: str, flags: str = "--enumerate u,vp,vt,dbe") -> str:
+def wpscan_scan(target: str, flags: str = "--enumerate u,vp,vt,dbe", timeout: int = 600) -> str:
     """WPScan — WordPress vulnerability scanner."""
     if err := require(target): return err
     return run(
         f"wpscan --url {san(target)} {san(flags)} --no-banner 2>/dev/null",
-        timeout=300,
+        timeout=timeout,
     )
 
 
@@ -1692,14 +1653,14 @@ def exploit_suggest(service: str, version: str = "") -> str:
 # ─── AUTOMATED OSINT FRAMEWORKS ──────────────────────────────────────────────
 
 @mcp.tool()
-def spiderfoot_scan(target: str, modules: str = "") -> str:
+def spiderfoot_scan(target: str, modules: str = "", timeout: int = 1200) -> str:
     """SpiderFoot — automated OSINT correlation across 200+ data sources."""
     if err := require(target): return err
     t = san(target)
     mods = f"-m {san(modules)}" if modules else ""
     return run(
         f"cd /opt/spiderfoot && {PYTHON} sf.py -s {t} {mods} -q 2>/dev/null | head -100",
-        timeout=600,
+        timeout=timeout,
     )
 
 
@@ -1802,34 +1763,25 @@ def msfvenom_generate(options: str) -> str:
 # ─── PASSWORD ATTACKS ─────────────────────────────────────────────────────────
 
 @mcp.tool()
-def hydra_attack(target: str, options: str = "") -> str:
+def hydra_attack(target: str, options: str = "", timeout: int = 900) -> str:
     """Hydra brute-force login attack.
     Example options: -l admin -P /usr/share/wordlists/rockyou.txt ssh://target"""
     if err := require(target): return err
-    # Auto-calc: check if large wordlist is used
-    opts_lower = options.lower()
-    timeout = 1800 if "rockyou" in opts_lower or "-c " in opts_lower or "-C " in opts_lower else 900
     return run_argv(["hydra"] + split_opts(options) + [san(target)], timeout=timeout)
 
 
 @mcp.tool()
-def john_crack(hashfile: str, options: str = "--wordlist=/usr/share/wordlists/rockyou.txt") -> str:
+def john_crack(hashfile: str, options: str = "--wordlist=/usr/share/wordlists/rockyou.txt", timeout: int = 900) -> str:
     """Crack password hashes with John the Ripper from a hash file."""
     if err := require(hashfile): return err
-    # Auto-calc: rockyou wordlist = 1800s, otherwise 900s
-    opts_lower = options.lower()
-    timeout = 1800 if "rockyou" in opts_lower else 900
     return run_argv(["john"] + split_opts(options) + [san(hashfile)], timeout=timeout)
 
 
 @mcp.tool()
-def hashcat_crack(hashfile: str, options: str = "-a 0 -m 0 /usr/share/wordlists/rockyou.txt") -> str:
+def hashcat_crack(hashfile: str, options: str = "-a 0 -m 0 /usr/share/wordlists/rockyou.txt", timeout: int = 900) -> str:
     """Crack hashes with Hashcat.
     Common -m values: 0=MD5  1000=NTLM  1800=sha512crypt"""
     if err := require(hashfile): return err
-    # Auto-calc: rockyou wordlist = 1800s, otherwise 900s
-    opts_lower = options.lower()
-    timeout = 1800 if "rockyou" in opts_lower else 900
     return run_argv(["hashcat"] + split_opts(options) + [san(hashfile)], timeout=timeout)
 
 
