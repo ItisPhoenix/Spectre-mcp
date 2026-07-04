@@ -23,27 +23,27 @@ docker compose up -d --build
 
 ## ⚙️ Step 2: Configure Your AI Editor
 
-SPECTRE is a standard **MCP SSE (Server-Sent Events)** server. Use the instructions below for your specific tool.
+SPECTRE is a standard **MCP Streamable-HTTP** server. Use the instructions below for your specific tool.
 
 ### 🤖 Claude Code (Anthropic)
 Run the following command to add SPECTRE to your Claude Code configuration:
 ```bash
 # In your terminal
-claude mcp add spectre http://localhost:8001/sse
+claude mcp add spectre http://localhost:8001/mcp
 ```
 *Alternatively, manually add to `~/.claude/config.json`.*
 
 ### ♊ Gemini CLI (Google)
 Add the server with the following command:
 ```bash
-gemini mcp add --transport sse --trust spectre http://localhost:8001/sse
+gemini mcp add --transport http --trust spectre http://localhost:8001/mcp
 ```
 
 ### 🛠️ Cursor / Windsurf / Cline (IDE Extensions)
 While these are often used in IDEs, they use the same MCP configuration. Add a new MCP server with:
-- **Type:** `sse`
+- **Type:** `Streamable-HTTP,`
 - **Name:** `spectre`
-- **URL:** `http://localhost:8001/sse`
+- **URL:** `http://localhost:8001/mcp`
 
 ---
 
@@ -81,6 +81,6 @@ environment:
 ## ❓ Troubleshooting
 
 *   **Connection Refused:** Ensure port `8001` isn't occupied. Run `docker compose logs spectre` to check for Python startup errors.
-*   **Authorization Errors:** In some CLIs, you may need to explicitly "trust" the local SSE endpoint when prompted.
+*   **Authorization Errors:** In some CLIs, you may need to explicitly "trust" the local Streamable-HTTP, endpoint when prompted.
 *   **Tool Failures:** Individual tool build failures are usually non-fatal. Use `spectre_status` to see which tools are available.
 *   **Pathing:** On Windows, if using PowerShell, ensure you are in the correct directory where `docker-compose.yml` exists.

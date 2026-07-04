@@ -18,7 +18,7 @@
 [![Issues](https://img.shields.io/github/issues/ItisPhoenix/Spectre-mcp?style=for-the-badge&color=red)](https://github.com/ItisPhoenix/Spectre-mcp/issues)
 [![Tools](https://img.shields.io/badge/Tools-139+-purple?style=for-the-badge)](https://github.com/ItisPhoenix/Spectre-mcp)
 [![Platform](https://img.shields.io/badge/Base-Kali%20Linux-blue?style=for-the-badge&logo=kalilinux)](https://www.kali.org/)
-[![MCP](https://img.shields.io/badge/Transport-SSE-orange?style=for-the-badge)](https://modelcontextprotocol.io/)
+[![MCP](https://img.shields.io/badge/Transport-Streamable-HTTP,-orange?style=for-the-badge)](https://modelcontextprotocol.io/)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://hub.docker.com/)
 
@@ -28,7 +28,8 @@
 
 ## What is SPECTRE?
 
-**SPECTRE** transforms your AI agent into a full-spectrum security researcher. It runs a containerised **Kali Linux** environment and exposes every tool inside it to any MCP-compatible AI via **Server-Sent Events (SSE)**. One command spins it up. One URL connects your agent.
+**SPECTRE** transforms your AI agent into a full-spectrum security researcher. It runs a containerised **Kali Linux** environment and exposes every tool inside it to any MCP-compatible AI via **MCP Streamable-HTTP**. One command spins it up. One URL connects your agent.
+
 
 The server exposes **139+ industrial-grade security tools** — from passive OSINT through to active exploitation — all wrapped as clean, typed MCP tools that any capable AI can call natively, including Claude Code, Gemini CLI, Cursor, and Windsurf.
 
@@ -65,12 +66,12 @@ docker compose up -d --build
 
 # 3. Connect your AI
 # Claude Code
-claude mcp add spectre http://localhost:8001/sse
+claude mcp add spectre http://localhost:8001/mcp
 
 # Gemini CLI
-gemini mcp add --transport sse --trust spectre http://localhost:8001/sse
+gemini mcp add --transport Streamable-HTTP, --trust spectre http://localhost:8001/mcp
 
-# Cursor / Windsurf / Cline → add SSE server at http://localhost:8001/sse
+# Cursor / Windsurf / Cline → add Streamable-HTTP, server at http://localhost:8001/mcp
 ```
 
 Verify everything is running by asking your AI:
@@ -85,7 +86,7 @@ Verify everything is running by asking your AI:
 │                   AI Agent / CLI                     │
 │        (Claude Code, Gemini CLI, Cursor ...)         │
 └───────────────────────┬──────────────────────────────┘
-                        │  MCP / SSE  (port 8001)
+                        │  MCP / Streamable-HTTP  (port 8001)
 ┌───────────────────────▼──────────────────────────────┐
 │              spectre.py  (FastMCP server)             │
 │         mcp==1.24.0  ·  fastmcp==2.3.3               │
@@ -100,7 +101,7 @@ Verify everything is running by asking your AI:
   Kali Linux Container  ─  apt pkgs + Go tools + Python venv
 ```
 
-The server runs entirely inside a Docker container built on `kalilinux/kali-rolling`. The MCP layer is a single Python file (`spectre.py`) using **FastMCP** over SSE — meaning any MCP-capable AI can connect to it over HTTP with zero custom integration.
+The server runs entirely inside a Docker container built on `kalilinux/kali-rolling`. The MCP layer is a single Python file (`spectre.py`) using **FastMCP** over Streamable-HTTP, — meaning any MCP-capable AI can connect to it over HTTP with zero custom integration.
 
 ---
 
@@ -331,7 +332,7 @@ All settings are tunable via environment variables in `docker-compose.yml`.
 | :--- | :--- | :--- |
 | `MCP_HOST` | `0.0.0.0` | Bind address |
 | `MCP_PORT` | `8001` | Listening port |
-| `MCP_TRANSPORT` | `sse` | Transport type (`sse` or `stdio`) |
+| `MCP_TRANSPORT` | `Streamable-HTTP,` | 
 | `TOOL_TIMEOUT` | `600` | Default timeout (seconds) per tool call |
 | `SPECTRE_PYTHON` | `/opt/mcp-venv/bin/python3` | Python interpreter inside the venv |
 | `SPECTRE_WORDLIST` | `/usr/share/wordlists/dirb/common.txt` | Default wordlist for fuzzing tools |
@@ -349,28 +350,28 @@ docker compose up -d
 
 ## Connecting Your AI
 
-SPECTRE is a standard MCP SSE server. The connection URL is always `http://localhost:8001/sse`.
+SPECTRE is a standard MCP Streamable-HTTP, server. The connection URL is always `http://localhost:8001/mcp`.
 
 **Claude Code**
 ```bash
-claude mcp add spectre http://localhost:8001/sse
+claude mcp add spectre http://localhost:8001/mcp
 ```
 
 **Gemini CLI**
 ```bash
-gemini mcp add --transport sse --trust spectre http://localhost:8001/sse
+gemini mcp add --transport Streamable-HTTP, --trust spectre http://localhost:8001/mcp
 ```
 
 **Cursor / Windsurf / Cline**
-Add a new MCP server with type `sse` and URL `http://localhost:8001/sse`.
+Add a new MCP server with type `Streamable-HTTP,` and URL `http://localhost:8001/mcp`.
 
 **Manual JSON config** (`~/.claude/config.json` or equivalent)
 ```json
 {
   "mcpServers": {
     "spectre": {
-      "type": "sse",
-      "url": "http://localhost:8001/sse"
+      "type": "Streamable-HTTP,",
+      "url": "http://localhost:8001/mcp"
     }
   }
 }
@@ -397,7 +398,7 @@ Add a new MCP server with type `sse` and URL `http://localhost:8001/sse`.
 | :--- | :--- |
 | **Base Image** | `kalilinux/kali-rolling` |
 | **MCP Server** | FastMCP 2.3.3 + mcp[cli] 1.24.0 |
-| **Transport** | SSE (Server-Sent Events) on port 8001 |
+| **Transport** | Streamable-HTTP on port 8001 |
 | **Python Tools** | sherlock, maigret, holehe, h8mail, ghunt, socialscan, scrapling, phoneinfoga, osrframework, shodan, dnspython |
 | **Go Tools** | subfinder, httpx, nuclei, naabu, katana, tlsx, dnsx, waybackurls, gau, assetfinder, hakrawler, gospider |
 | **Kali Packages** | nmap, masscan, nikto, sqlmap, wpscan, gobuster, ffuf, hydra, john, hashcat, metasploit-framework, aircrack-ng, responder, netexec, impacket, enum4linux, and 100+ more |
@@ -412,7 +413,7 @@ Add a new MCP server with type `sse` and URL `http://localhost:8001/sse`.
 Check that the container is running: `docker compose ps`. View startup errors: `docker compose logs spectre`.
 
 **Authorization errors in your AI CLI**
-Some CLIs prompt you to explicitly trust local SSE endpoints. Accept the prompt or use the `--trust` flag (Gemini CLI).
+Some CLIs prompt you to explicitly trust local Streamable-HTTP, endpoints. Accept the prompt or use the `--trust` flag (Gemini CLI).
 
 **A specific tool returns an error or no output**
 Some tools may fail to install on certain systems. Run `spectre_status` to see which binaries are available. Tool build failures are non-fatal; everything else keeps working.
