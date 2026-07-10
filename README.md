@@ -18,7 +18,7 @@
 [![Issues](https://img.shields.io/github/issues/ItisPhoenix/Spectre-mcp?style=for-the-badge&color=red)](https://github.com/ItisPhoenix/Spectre-mcp/issues)
 [![Tools](https://img.shields.io/badge/Tools-139+-purple?style=for-the-badge)](https://github.com/ItisPhoenix/Spectre-mcp)
 [![Platform](https://img.shields.io/badge/Base-Kali%20Linux-blue?style=for-the-badge&logo=kalilinux)](https://www.kali.org/)
-[![MCP](https://shields.io)](https://modelcontextprotocol.io/)
+[![MCP](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-blue?style=for-the-badge)](https://modelcontextprotocol.io/)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://hub.docker.com/)
 
