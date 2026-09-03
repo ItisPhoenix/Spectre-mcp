@@ -30,9 +30,12 @@ fi
 
 echo "[*] Starting SPECTRE MCP server..."
 echo "    Transport : ${MCP_TRANSPORT:-sse}"
-echo "    Address   : ${MCP_HOST:-0.0.0.0}:${MCP_PORT:-8001}"
-echo "    Auth      : ${SPECTRE_API_KEY:+ENABLED}${SPECTRE_API_KEY:-DISABLED (open)}"
+echo "    Address   : ${MCP_HOST:-127.0.0.1}:${MCP_PORT:-8001}"
+if [ -n "${SPECTRE_API_KEY:-}" ]; then
+    echo "    Auth      : ENABLED"
+else
+    echo "    Auth      : DISABLED (open)"
+fi
 echo ""
 
 exec /opt/mcp-venv/bin/python3 /opt/spectre/spectre.py
-

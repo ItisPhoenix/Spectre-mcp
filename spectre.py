@@ -20,6 +20,7 @@ import sys
 import os
 import re
 import json
+import hmac
 import logging
 import tempfile
 from typing import Optional
@@ -45,13 +46,13 @@ log = logging.getLogger("spectre")
 # CONFIGURATION  (all tuneable via environment variables)
 # ─────────────────────────────────────────────────────────────────────────────
 
-HOST             = os.environ.get("MCP_HOST",         "0.0.0.0")
+HOST             = os.environ.get("MCP_HOST",         "127.0.0.1")
 PORT             = int(os.environ.get("MCP_PORT",     "8001"))
 TRANSPORT        = os.environ.get("MCP_TRANSPORT",    "sse")
 TIMEOUT          = int(os.environ.get("TOOL_TIMEOUT", "600"))   # FIX: was 300 (mismatch with compose)
 PYTHON           = os.environ.get("SPECTRE_PYTHON",   "/opt/mcp-venv/bin/python3")
 WORDLIST         = os.environ.get("SPECTRE_WORDLIST", "/usr/share/wordlists/dirb/common.txt")
-SPECTRE_API_KEY  = os.environ.get("SPECTRE_API_KEY",  "")       # NEW: optional bearer auth for SSE
+SPECTRE_API_KEY  = os.environ.get("SPECTRE_API_KEY",  "")       # optional bearer auth for HTTP MCP transports
 
 # Optional API keys
 SHODAN_API_KEY  = os.environ.get("SHODAN_API_KEY",  "")
@@ -74,15 +75,24 @@ class _ASGIBearerAuth:
 
     _OPEN_PATHS = frozenset({"/", "/health", "/healthz"})
 
-    def __init__(self, app):
+    def __init__(self, app, api_key: str):
         self.app = app
+        self._api_key = api_key.encode("utf-8")
+        self._bearer = f"Bearer {api_key}".encode("utf-8")
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and scope.get("path", "") not in self._OPEN_PATHS:
+        if (
+            self._api_key
+            and scope["type"] == "http"
+            and scope.get("path", "") not in self._OPEN_PATHS
+        ):
             raw_headers = {k.lower(): v for k, v in scope.get("headers", [])}
-            auth = raw_headers.get(b"authorization", b"").decode("utf-8", errors="ignore")
-            xkey = raw_headers.get(b"x-api-key",     b"").decode("utf-8", errors="ignore")
-            if auth != f"Bearer {SPECTRE_API_KEY}" and xkey != SPECTRE_API_KEY:
+            auth = raw_headers.get(b"authorization", b"")
+            xkey = raw_headers.get(b"x-api-key",     b"")
+            if not (
+                hmac.compare_digest(auth, self._bearer)
+                or hmac.compare_digest(xkey, self._api_key)
+            ):
                 body = b'{"error":"Unauthorized"}'
                 await send({
                     "type": "http.response.start",
@@ -2217,7 +2227,7 @@ def spectre_status() -> str:
         f"    VT_API_KEY      : {'✔' if VT_API_KEY else '✘'}",
         f"    ABUSEIPDB_KEY   : {'✔' if ABUSEIPDB_KEY else '✘'}",
         f"    ETHERSCAN_KEY   : {'✔' if ETHERSCAN_KEY else '✘'}",
-        f"    SPECTRE_API_KEY : {'✔ (SSE auth enabled)' if SPECTRE_API_KEY else '✘ (open — no auth)'}",
+        f"    SPECTRE_API_KEY : {'✔ (HTTP auth enforced)' if SPECTRE_API_KEY else '✘ (HTTP auth disabled — open)'}",
         "\n  Installed Binaries:",
     ]
     for b in sorted(bins):
@@ -2249,18 +2259,15 @@ if __name__ == "__main__":
     log.info("  SPECTRE MCP Server — starting up")
     log.info("  Transport : %s", TRANSPORT)
     log.info("  Address   : %s:%d", HOST, PORT)
-    log.info("  Auth      : %s", "ENABLED (Bearer / X-API-Key)" if SPECTRE_API_KEY else "DISABLED — open to all")
+    log.info("  Auth      : %s", "ENABLED (HTTP Bearer / X-API-Key)" if SPECTRE_API_KEY else "DISABLED — open to all")
     log.info("=" * 62)
 
-    # Serve via FastMCP's built-in transport handling.
-    # This avoids SSE initialization races seen when manually wiring uvicorn/ASGI.
-    #
-    # NOTE: Authentication middleware is intentionally disabled for now to
-    # keep all MCP tools working reliably end-to-end.
-    if TRANSPORT == "sse" and SPECTRE_API_KEY:
-        log.warning(
-            "SPECTRE_API_KEY is set, but auth middleware is disabled to avoid SSE init races. "
-            "Run behind a reverse proxy / network policy if you need access control."
-        )
+    if TRANSPORT in {"sse", "streamable-http"}:
+        import uvicorn
 
-    mcp.run(transport=TRANSPORT)
+        app = mcp.sse_app() if TRANSPORT == "sse" else mcp.streamable_http_app()
+        if SPECTRE_API_KEY:
+            app = _ASGIBearerAuth(app, SPECTRE_API_KEY)
+        uvicorn.run(app, host=HOST, port=PORT)
+    else:
+        mcp.run(transport=TRANSPORT)
