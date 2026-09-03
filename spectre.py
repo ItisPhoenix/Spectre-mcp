@@ -20,10 +20,12 @@ import sys
 import os
 import re
 import json
+import ipaddress
 import hmac
 import logging
 import tempfile
 from typing import Optional
+from urllib.parse import quote
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -1911,8 +1913,7 @@ def linux_enum() -> str:
 @mcp.tool()
 def mimikatz_run(commands: str = "sekurlsa::logonpasswords") -> str:
     """Run mimikatz (if available) or provide Metasploit kiwi module instructions."""
-    check = run_argv(["which", "mimikatz"], timeout=5)
-    if "not found" in check or "ERROR" in check:
+    if not _which("mimikatz"):
         return "[INFO] mimikatz not installed natively. Use msfconsole_run with: load kiwi; creds_all"
     return run_argv(["mimikatz", san(commands), "exit"], timeout=60)
 
@@ -2065,7 +2066,11 @@ def full_domain_profile(domain: str) -> str:
 
     banner("[5/10] IP GEOLOCATION")
     ip_result = run(f"dig {d} A +short | head -1")
-    ip = ip_result.strip()
+    candidate = next((line.strip() for line in ip_result.splitlines() if line.strip()), "")
+    try:
+        ip = str(ipaddress.IPv4Address(candidate))
+    except ValueError:
+        ip = ""
     if ip:
         sec.append(run(f"curl -s 'https://ipinfo.io/{ip}/json' | python3 -m json.tool"))
     else:
@@ -2092,6 +2097,8 @@ def full_domain_profile(domain: str) -> str:
     banner("[10/10] THREAT INTELLIGENCE")
     if ip:
         sec.append(run(f"curl -s 'https://internetdb.shodan.io/{ip}' | python3 -m json.tool"))
+    else:
+        sec.append("(skipped — no valid IPv4)")
 
     sec.append("\n╔══════════════════════════════════════════════════════════════╗")
     sec.append("║                    PROFILE COMPLETE                          ║")
@@ -2134,7 +2141,7 @@ def full_person_profile(name: str = "", email: str = "",
     if name:
         n = san(name)
         sec.append(f"\n[SOCIAL SEARCH: {n}]")
-        query = urllib.parse.quote(n)
+        query = quote(n)
         sec.append(run(
             f"curl -sA 'Mozilla/5.0' 'https://www.google.com/search?q=\"{query}\"' 2>/dev/null "
             r"| python3 -c \"import sys,re; d=sys.stdin.read(); "
