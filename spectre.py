@@ -48,7 +48,7 @@ log = logging.getLogger("spectre")
 
 HOST             = os.environ.get("MCP_HOST",         "127.0.0.1")
 PORT             = int(os.environ.get("MCP_PORT",     "8001"))
-TRANSPORT        = os.environ.get("MCP_TRANSPORT",    "sse")
+TRANSPORT        = os.environ.get("MCP_TRANSPORT",    "streamable-http")
 TIMEOUT          = int(os.environ.get("TOOL_TIMEOUT", "600"))   # FIX: was 300 (mismatch with compose)
 PYTHON           = os.environ.get("SPECTRE_PYTHON",   "/opt/mcp-venv/bin/python3")
 WORDLIST         = os.environ.get("SPECTRE_WORDLIST", "/usr/share/wordlists/dirb/common.txt")

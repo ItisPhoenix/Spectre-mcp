@@ -1,7 +1,7 @@
 # ╔══════════════════════════════════════════════════════════════╗
 # ║  SPECTRE MCP — Dockerfile                                    ║
 # ║  Base: Kali Linux Rolling                                    ║
-# ║  MCP endpoint → http://localhost:8001/sse                    ║
+# ║  MCP endpoint → http://localhost:8001/mcp                    ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 FROM kalilinux/kali-rolling:latest
@@ -198,7 +198,7 @@ COPY spectre.py /opt/spectre/spectre.py
 COPY entrypoint.sh /opt/spectre/entrypoint.sh
 RUN chmod +x /opt/spectre/entrypoint.sh
 
-# ── Expose MCP SSE port ───────────────────────────────────────────────────────
+# ── Expose MCP Streamable HTTP port ──────────────────────────────────────────
 EXPOSE 8001
 
 # ── Working directory ─────────────────────────────────────────────────────────

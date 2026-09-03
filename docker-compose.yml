@@ -1,6 +1,6 @@
 # ╔══════════════════════════════════════════════════════════════╗
 # ║  SPECTRE MCP — Docker Compose                                ║
-# ║  MCP endpoint → http://localhost:8001/sse                    ║
+# ║  MCP endpoint → http://localhost:8001/mcp                    ║
 # ╚══════════════════════════════════════════════════════════════╝
 
 services:

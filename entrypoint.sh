@@ -29,7 +29,7 @@ if [ -n "${SHODAN_API_KEY:-}" ]; then
 fi
 
 echo "[*] Starting SPECTRE MCP server..."
-echo "    Transport : ${MCP_TRANSPORT:-sse}"
+echo "    Transport : ${MCP_TRANSPORT:-streamable-http}"
 echo "    Address   : ${MCP_HOST:-127.0.0.1}:${MCP_PORT:-8001}"
 if [ -n "${SPECTRE_API_KEY:-}" ]; then
     echo "    Auth      : ENABLED"
