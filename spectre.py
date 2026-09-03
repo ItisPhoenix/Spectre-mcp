@@ -125,6 +125,18 @@ def _mask(s: str) -> str:
     return _SECRET_RE.sub(lambda m: m.group(1) + m.group(2)[:4] + "***", s)
 
 
+def _format_process_result(returncode: int, stdout: str, stderr: str) -> str:
+    """Format a completed process without hiding its exit status or streams."""
+    out = (stdout or "").strip()
+    err = (stderr or "").strip()
+    parts = [f"[EXIT {returncode}]"] if returncode else []
+    if out:
+        parts.append(out)
+    if err:
+        parts.extend(["[STDERR]", err])
+    return "\n".join(parts) or "(no output)"
+
+
 def run(cmd: str, timeout: int = TIMEOUT) -> str:
     """Execute a shell command string; return combined stdout/stderr."""
     log.info("EXEC: %s", _mask(cmd[:300]))
@@ -137,11 +149,7 @@ def run(cmd: str, timeout: int = TIMEOUT) -> str:
             text=True,
             timeout=timeout,
         )
-        out = r.stdout.strip()
-        err = r.stderr.strip()
-        if out and err:
-            return out + "\n[STDERR]\n" + err
-        return out or err or "(no output)"
+        return _format_process_result(r.returncode, r.stdout, r.stderr)
     except subprocess.TimeoutExpired:
         return f"[TIMEOUT] {timeout}s exceeded"
     except Exception as exc:
@@ -155,13 +163,7 @@ def run_argv(cmd: list, timeout: int = TIMEOUT) -> str:
         r = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout
         )
-        out = r.stdout.strip()
-        err = r.stderr.strip()
-        if r.returncode not in (0, 1) and not out:
-            out = f"[Exit {r.returncode}]"
-        if out and err:
-            return out + "\n[STDERR]\n" + err
-        return out or err or "(no output)"
+        return _format_process_result(r.returncode, r.stdout, r.stderr)
     except subprocess.TimeoutExpired:
         return f"[TIMEOUT] {timeout}s exceeded"
     except FileNotFoundError as exc:
